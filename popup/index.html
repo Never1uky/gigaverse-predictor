@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gigaverse Predictor</title>
+
+    <script type="module"  src="./index.js"></script>
+    <link rel="stylesheet"  href="./styles.css">
+  </head>
+  <body>
+    <main class="app">
+      <h1>Gigaverse Predictor</h1>
+
+      <section class="block">
+        <h2>Status</h2>
+        <p id="status" class="status">○ Checking…</p>
+      </section>
+
+      <section class="block">
+        <h2>Statistics</h2>
+        <ul class="stats" id="stats-list">
+          <li>Total moves: <strong id="total-moves">0</strong></li>
+          <li>Unique enemies: <strong id="unique-enemies">0</strong></li>
+          <li>Runs: <strong id="runs">0</strong></li>
+        </ul>
+      </section>
+
+      <section class="block">
+        <h2>Last data</h2>
+        <p id="last-data" class="muted">No moves captured yet.</p>
+      </section>
+
+
+      <section class="block" id="fishing-block">
+        <h2>Fishing Predictor</h2>
+        <p id="fish-status" class="muted">Fishing idle</p>
+        <p id="fish-summary" class="muted"></p>
+        <div id="fish-grid" class="fish-grid" aria-hidden="true"></div>
+        <p id="fish-stats" class="muted"></p>
+      </section>
+
+      <section class="block">
+        <h2>Prediction</h2>
+        <p id="pred-summary" class="muted">No prediction yet.</p>
+        <p id="pred-accuracy" class="muted"></p>
+        <p id="pred-intuition" class="muted"></p>
+        <div class="actions pred-actions">
+          <button type="button" id="btn-prediction">Prediction ON</button>
+          <button type="button" id="btn-reset-model">Reset Model</button>
+        </div>
+      </section>
+
+      <section class="block" id="community-block">
+        <h2>Community data</h2>
+        <p class="muted community-note">
+          Shared move logs only. Your login is never sent. Nothing leaves this browser unless you Export and save a file yourself.
+        </p>
+        <div class="actions community-actions">
+          <button type="button" id="btn-community-export">Export community</button>
+          <button type="button" id="btn-community-import">Import file</button>
+          <button type="button" id="btn-community-bundled">Load bundled dataset</button>
+          <button type="button" id="btn-community-pull" disabled title="Set a read-only HTTPS URL in options, or use Import file">Pull from GitHub</button>
+        </div>
+        <p id="community-pull-hint" class="muted">Pull disabled — download merged/*.jsonl from the repo and Import file.</p>
+        <input type="file" id="community-import-file" accept="application/json,.json,.jsonl,text/plain" hidden />
+      </section>
+
+      <section class="block actions">
+        <button type="button" id="btn-export-json">Export JSON</button>
+        <button type="button" id="btn-export-csv">Export CSV</button>
+        <button type="button" id="btn-export-full" class="danger-outline">Export Full</button>
+        <p class="warn-full">Export Full — only for yourself. Contains actionToken. Do not share.</p>
+        <button type="button" id="btn-import">Import JSON</button>
+        <button type="button" id="btn-clear" class="danger">Clear Data</button>
+        <button type="button" id="btn-debug">Debug</button>
+        <input type="file" id="import-file" accept="application/json,.json" hidden />
+      </section>
+
+      <section class="block">
+        <h2>Enemy statistics</h2>
+        <ul id="enemy-list" class="enemy-list">
+          <li class="muted">No enemies yet.</li>
+        </ul>
+        <div id="enemy-details" class="enemy-details muted"></div>
+      </section>
+
+      <p id="message" class="message" hidden></p>
+    </main>
+
+  </body>
+</html>

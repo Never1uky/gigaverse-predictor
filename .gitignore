@@ -1,0 +1,9 @@
+.DS_Store
+Thumbs.db
+*.crx
+*.pem
+.idea/
+.vscode/
+node_modules/
+*.log
+.env

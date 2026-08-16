@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "Gigaverse Predictor",
+  "version": "1.5.1",
+  "description": "Passive combat + fishing advisor for Gigaverse. Local + optional community import; never posts actions or uploads logs.",
+  "permissions": ["storage", "unlimitedStorage", "activeTab", "tabs"],
+  "host_permissions": ["https://gigaverse.io/*"],
+  "background": {
+    "service_worker": "background/index.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Gigaverse Predictor",
+    "default_popup": "popup/index.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://gigaverse.io/play", "https://gigaverse.io/play*", "https://gigaverse.io/play/*"],
+      "js": ["page/interceptor.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://gigaverse.io/play", "https://gigaverse.io/play*", "https://gigaverse.io/play/*"],
+      "js": ["content/index.js"],
+      "run_at": "document_start"
+    }
+  ]
+}
