@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Gigaverse Predictor",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "description": "Passive combat + fishing advisor for Gigaverse. Local + optional community import; never posts actions or uploads logs.",
   "permissions": ["storage", "unlimitedStorage", "activeTab", "tabs"],
   "host_permissions": ["https://gigaverse.io/*"],

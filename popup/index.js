@@ -4,6 +4,13 @@ function $(id) {
   if (!el) throw new Error(`Missing element #${id}`);
   return el;
 }
+function maybe$(id) {
+  return document.getElementById(id);
+}
+function bindClick(id, handler) {
+  const el = maybe$(id);
+  if (el) el.addEventListener("click", handler);
+}
 function showMessage(text) {
   const el = $("message");
   el.hidden = false;
@@ -22,7 +29,11 @@ function downloadText(filename, content, mime) {
   URL.revokeObjectURL(url);
 }
 async function sendMessage(message) {
-  return chrome.runtime.sendMessage(message);
+  try {
+    return await chrome.runtime.sendMessage(message);
+  } catch {
+    return null;
+  }
 }
 async function pingContentScript() {
   var _a;
@@ -113,17 +124,25 @@ Unknown: ${st.unknown ?? 0} (${st.unknownPct ?? 0}%)`;
 }
 
 async function refresh() {
-  const onPlay = await pingContentScript();
-  const statusEl = $("status");
-  if (onPlay) {
-    statusEl.textContent = "● Collecting";
-    statusEl.className = "status on";
-  } else {
-    statusEl.textContent = "○ Not on Gigaverse";
-    statusEl.className = "status off";
-  }
-  const statsRes = await sendMessage({ type: "GET_STATS" });
-  if (!(statsRes == null ? void 0 : statsRes.ok)) return;
+  try {
+    const onPlay = await pingContentScript();
+    const statusEl = $("status");
+    if (onPlay) {
+      statusEl.textContent = "● Collecting";
+      statusEl.className = "status on";
+    } else {
+      statusEl.textContent = "○ Not on Gigaverse";
+      statusEl.className = "status off";
+    }
+    const statsRes = await sendMessage({ type: "GET_STATS" });
+    if (!(statsRes == null ? void 0 : statsRes.ok)) {
+      if (!statsRes) {
+        statusEl.textContent = "○ Background unavailable";
+        statusEl.className = "status off";
+        showMessage("Reload the extension on chrome://extensions");
+      }
+      return;
+    }
   const { overall, byEnemy, lastEnemy } = statsRes.stats;
   $("total-moves").textContent = String(overall.totalMoves);
   $("unique-enemies").textContent = String(overall.uniqueEnemies);
@@ -212,9 +231,17 @@ async function refresh() {
     accuracy.textContent = "";
     intuition.textContent = "";
   }
+  } catch {
+    const statusEl = maybe$("status");
+    if (statusEl) {
+      statusEl.textContent = "○ Popup error";
+      statusEl.className = "status off";
+    }
+    showMessage("Popup failed to refresh — reload extension");
+  }
 }
 function wireActions() {
-  $("btn-export-json").addEventListener("click", async () => {
+  bindClick("btn-export-json", async () => {
     const res = await sendMessage({ type: "EXPORT_JSON" });
     if (!(res == null ? void 0 : res.ok)) {
       showMessage("Export failed");
@@ -223,7 +250,7 @@ function wireActions() {
     downloadText(res.filename, res.json, "application/json");
     showMessage("JSON exported");
   });
-  $("btn-export-csv").addEventListener("click", async () => {
+  bindClick("btn-export-csv", async () => {
     const res = await sendMessage({ type: "EXPORT_CSV" });
     if (!(res == null ? void 0 : res.ok)) {
       showMessage("Export failed");
@@ -232,7 +259,7 @@ function wireActions() {
     downloadText(res.filename, res.csv, "text/csv");
     showMessage("CSV exported");
   });
-  $("btn-export-full").addEventListener("click", async () => {
+  bindClick("btn-export-full", async () => {
     const ok = window.confirm(
       "Export Full is ONLY for yourself.\nIt may contain actionToken.\nDo NOT share Full files — use Export community / JSON / CSV instead.",
     );
@@ -246,7 +273,7 @@ function wireActions() {
     showMessage("Full export saved (do not share)");
   });
 
-  $("btn-community-export").addEventListener("click", async () => {
+  bindClick("btn-community-export", async () => {
     const step1 = window.confirm(
       "Export community file includes:\n• Combat moves (dungeonId, fight, HP/charges, rock/paper/scissor)\n• Fishing steps (board 3|4, fish/bobber positions)\n\nDoes NOT include: login, JWT, cookies, wallet, actionToken.\n\nThe file is saved ONLY to your disk. The extension does not upload it.",
     );
@@ -264,14 +291,15 @@ function wireActions() {
     showMessage(`Community export: ${res.count} rows (combat ${res.combat}, fishing ${res.fishing})`);
   });
 
-  $("btn-community-import").addEventListener("click", () => {
+  bindClick("btn-community-import", () => {
     const ok = window.confirm(
       "Import adds other players' move logs into your local database.\nYour login is NOT sent anywhere.\nDuplicates are skipped.",
     );
     if (!ok) return;
-    $("community-import-file").click();
+    maybe$("community-import-file")?.click();
   });
-  $("community-import-file").addEventListener("change", async (event) => {
+  const communityImportFile = maybe$("community-import-file");
+  if (communityImportFile) communityImportFile.addEventListener("change", async (event) => {
     const input = event.target;
     const file = input.files?.[0];
     if (!file) return;
@@ -294,7 +322,7 @@ function wireActions() {
     }
   });
 
-  $("btn-community-bundled").addEventListener("click", async () => {
+  bindClick("btn-community-bundled", async () => {
     const ok = window.confirm(
       "Load the community dataset bundled with this extension?\nAdds shared move logs only. Your login is not sent.\n(Empty placeholder files do nothing.)",
     );
@@ -309,7 +337,7 @@ function wireActions() {
     await refreshFishing();
   });
 
-  $("btn-community-pull").addEventListener("click", async () => {
+  bindClick("btn-community-pull", async () => {
     const res = await sendMessage({ type: "PULL_COMMUNITY" });
     if (!(res == null ? void 0 : res.ok)) {
       showMessage(res?.hint ?? "Pull disabled — use Import file");
@@ -321,26 +349,30 @@ function wireActions() {
   });
 
   void (async () => {
-    const meta = await sendMessage({ type: "GET_COMMUNITY_META" });
-    const pullBtn = $("btn-community-pull");
-    const bundledBtn = $("btn-community-bundled");
-    const hint = $("community-pull-hint");
-    if (meta?.canPull) {
-      pullBtn.disabled = false;
-      pullBtn.title = "Read-only GET of configured HTTPS URL";
-      hint.textContent = "Pull URL configured (read-only).";
-    } else {
-      pullBtn.disabled = true;
-      hint.textContent = "Pull disabled — download merged/*.jsonl from the repo and Import file.";
-    }
-    // Bundled placeholders are empty until a shared dataset is added to the package.
-    if (bundledBtn && meta?.bundledEmpty === true) {
-      bundledBtn.disabled = true;
-      bundledBtn.title = "Bundled community files are empty placeholders";
+    try {
+      const meta = await sendMessage({ type: "GET_COMMUNITY_META" });
+      const pullBtn = maybe$("btn-community-pull");
+      const bundledBtn = maybe$("btn-community-bundled");
+      const hint = maybe$("community-pull-hint");
+      if (!pullBtn || !hint) return;
+      if (meta?.canPull) {
+        pullBtn.disabled = false;
+        pullBtn.title = "Read-only GET of configured HTTPS URL";
+        hint.textContent = "Pull URL configured (read-only).";
+      } else {
+        pullBtn.disabled = true;
+        hint.textContent = "Pull disabled — download merged/*.jsonl from the repo and Import file.";
+      }
+      if (bundledBtn && meta?.bundledEmpty === true) {
+        bundledBtn.disabled = true;
+        bundledBtn.title = "Bundled community files are empty placeholders";
+      }
+    } catch {
+      // community meta is optional — never block popup
     }
   })();
 
-  $("btn-import").addEventListener("click", () => {
+  bindClick("btn-import", () => {
     $("import-file").click();
   });
   $("import-file").addEventListener("change", async (event) => {
@@ -369,28 +401,28 @@ function wireActions() {
       input.value = "";
     }
   });
-  $("btn-clear").addEventListener("click", async () => {
+  bindClick("btn-clear", async () => {
     const confirmed = window.confirm("Clear all collected combat data?");
     if (!confirmed) return;
     await sendMessage({ type: "CLEAR_DATA" });
     showMessage("Data cleared");
     await refresh();
   });
-  $("btn-debug").addEventListener("click", async () => {
+  bindClick("btn-debug", async () => {
     const current = await sendMessage({ type: "GET_DEBUG" });
     const enabled = !((current == null ? void 0 : current.ok) && current.debug);
     await sendMessage({ type: "SET_DEBUG", enabled });
     showMessage(enabled ? "Debug enabled" : "Debug disabled");
     await refresh();
   });
-  $("btn-prediction").addEventListener("click", async () => {
+  bindClick("btn-prediction", async () => {
     const current = await sendMessage({ type: "GET_PREDICTION_META" });
     const enabled = !((current == null ? void 0 : current.ok) && current.predictionEnabled);
     await sendMessage({ type: "SET_PREDICTION", enabled });
     showMessage(enabled ? "Prediction enabled" : "Prediction disabled");
     await refresh();
   });
-  $("btn-reset-model").addEventListener("click", async () => {
+  bindClick("btn-reset-model", async () => {
     const confirmed = window.confirm("Reset prediction model counts/accuracy? Raw moves stay.");
     if (!confirmed) return;
     await sendMessage({ type: "RESET_MODEL" });
@@ -398,5 +430,12 @@ function wireActions() {
     await refresh();
   });
 }
-wireActions();
-void refresh();
+function boot() {
+  wireActions();
+  void refresh();
+}
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", boot);
+} else {
+  boot();
+}

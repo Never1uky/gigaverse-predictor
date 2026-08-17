@@ -1,10 +1,17 @@
 import { R as RPS_BEATS, M as MOVE_ORDER, a as MOVE_UI_LABELS, b as RPS_COUNTER } from "../assets/constants.js";
 import { applyHardConstraints, chooseBestReply, fightersFromFeatures } from "../assets/ev.js";
+import {
+  confidenceFromN,
+  countTotal,
+  enemyStatsKey,
+  emptyCounts as combatEmptyCounts,
+  predictEnemyDistribution,
+  updateCombatStats,
+} from "../assets/combat-predict.js";
 import { collectAbilityContext } from "../assets/abilities.js";
 import { ingestFishingCapture, ingestFishingHandUi, getFishingStatus, clearFishingData, clearFishingUiState, getAllFishingSessions, upsertCommunityFishing, getCommunityFishing } from "../assets/fishing-collector.js";
 import {
   canPullFromUrl,
-  combatModelKey,
   combatRecordFromMove,
   communityCombatToMove,
   communityExportContainsSecrets,
@@ -594,8 +601,8 @@ function mergeRunContext(existing, response, capturedAt, requestAction) {
     rawSafeSummary: summary
   };
 }
-function modelKeyFor(dungeonId, enemyCid, loadoutIds, enemyMaxHp) {
-  return combatModelKey(dungeonId, enemyCid, loadoutIds, enemyMaxHp);
+function modelKeyFor(_dungeonId, enemyCid, _loadoutIds, _enemyMaxHp) {
+  return enemyStatsKey(enemyCid);
 }
 function pct(current, max) {
   if (current == null || max == null || max <= 0) return null;
@@ -859,6 +866,8 @@ function mix(parts) {
 function createEmptyStore() {
   return {
     enemies: {},
+    global: combatEmptyCounts(),
+    globalN: 0,
     accuracy: { predictions: 0, top1Hits: 0, mostFrequentHits: 0 },
     lastPrediction: null
   };
@@ -869,41 +878,15 @@ function ensureEnemy(store, modelKey, enemyCid) {
       modelKey,
       enemyCid,
       n: 0,
-      base: emptyCounts$1(),
+      base: combatEmptyCounts(),
       markov: {},
-      seq2: {},
-      seq3: {},
-      state: {},
       updatedAt: (/* @__PURE__ */ new Date()).toISOString()
     };
   }
   return store.enemies[modelKey];
 }
 function updateModel(store, features, observed) {
-  var _a, _b, _c, _d;
-  const enemy = ensureEnemy(store, features.modelKey, features.enemyCid);
-  bump$1(enemy.base, observed);
-  enemy.n += 1;
-  if (features.prevEnemyMove) {
-    const key = features.prevEnemyMove;
-    (_a = enemy.markov)[key] ?? (_a[key] = emptyCounts$1());
-    bump$1(enemy.markov[key], observed);
-  }
-  if (features.prev2EnemyMoves.length === 2) {
-    const key = features.prev2EnemyMoves.join("→");
-    (_b = enemy.seq2)[key] ?? (_b[key] = emptyCounts$1());
-    bump$1(enemy.seq2[key], observed);
-  }
-  if (features.prev3EnemyMoves.length === 3) {
-    const key = features.prev3EnemyMoves.join("→");
-    (_c = enemy.seq3)[key] ?? (_c[key] = emptyCounts$1());
-    bump$1(enemy.seq3[key], observed);
-  }
-  const sk = stateKey(features, enemy.n >= 200);
-  (_d = enemy.state)[sk] ?? (_d[sk] = emptyCounts$1());
-  bump$1(enemy.state[sk], observed);
-  enemy.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
-  return store;
+  return updateCombatStats(store, features, observed);
 }
 function mostFrequentMove(enemy) {
   if (!enemy) return null;
@@ -914,57 +897,14 @@ function mostFrequentMove(enemy) {
   });
 }
 function predict(store, features) {
-  const enemy = store.enemies[features.modelKey];
-  const n = (enemy == null ? void 0 : enemy.n) ?? 0;
-  const w = weightsForN(n);
-  const constraintOpts = {
-    enemyRockCharges: features.enemyRockCharges,
-    enemyPaperCharges: features.enemyPaperCharges,
-    enemyScissorCharges: features.enemyScissorCharges,
-    enemyRockBlocked: features.enemyRockBlocked,
-    enemyPaperBlocked: features.enemyPaperBlocked,
-    enemyScissorBlocked: features.enemyScissorBlocked,
-    ruledOutMove: features.ruledOutMove,
-    uiUnavailableMoves: features.uiUnavailableMoves
-  };
-  const legalPreview = applyHardConstraints({ rock: 1, paper: 1, scissor: 1 }, constraintOpts);
-  const locked = legalPreview.locked === true;
-  let probs;
-  let unavailable;
-  if (locked) {
-    // Single legal enemy move: certainty, skip history mix.
-    probs = legalPreview.probs;
-    unavailable = legalPreview.unavailable;
-  } else {
-    const parts = [
-      { w: w.base, p: laplace(enemy == null ? void 0 : enemy.base) }
-    ];
-    if (w.markov > 0 && features.prevEnemyMove) {
-      parts.push({ w: w.markov, p: laplace(enemy == null ? void 0 : enemy.markov[features.prevEnemyMove]) });
-    }
-    if (w.seq2 > 0 && features.prev2EnemyMoves.length === 2) {
-      parts.push({
-        w: w.seq2,
-        p: laplace(enemy == null ? void 0 : enemy.seq2[features.prev2EnemyMoves.join("→")])
-      });
-    }
-    if (w.seq3 > 0 && features.prev3EnemyMoves.length === 3) {
-      parts.push({
-        w: w.seq3,
-        p: laplace(enemy == null ? void 0 : enemy.seq3[features.prev3EnemyMoves.join("→")])
-      });
-    }
-    if (w.state > 0) {
-      parts.push({
-        w: w.state,
-        p: laplace(enemy == null ? void 0 : enemy.state[stateKey(features, n >= 200)])
-      });
-    }
-    const constrained = applyHardConstraints(mix(parts), constraintOpts);
-    probs = constrained.probs;
-    unavailable = constrained.unavailable;
-  }
+  const dist = predictEnemyDistribution(store, features);
+  const n = dist.n;
+  const probs = dist.probs;
+  const unavailable = dist.unavailable;
+  const locked = dist.locked === true;
   const top = topMove(probs);
+  const maxP = top ? probs[top] : 0;
+  const confidence = confidenceFromN(n, maxP);
   const counter = counterFor(top);
   const { us, enemy: enemyFighter } = fightersFromFeatures(features);
   const replyOpts = {
@@ -979,7 +919,7 @@ function predict(store, features) {
     probs,
     percents: toPercents$1(probs),
     n,
-    confidence: w.confidence,
+    confidence,
     topMove: top,
     counterMove: counter,
     recommendedMove: reply.move,
@@ -1407,8 +1347,14 @@ async function getPredictorStore() {
     const row = await reqToPromise(tx.objectStore(STORE_MODEL).get(MODEL_KEY));
     await txDone(tx);
     if (!row) return createEmptyStore();
+    const base = createEmptyStore();
     const { key: _k, ...store } = row;
-    return { ...createEmptyStore(), ...store };
+    return {
+      ...base,
+      ...store,
+      global: store.global ?? base.global,
+      globalN: store.globalN ?? countTotal(store.global) ?? 0
+    };
   } finally {
     db.close();
   }
