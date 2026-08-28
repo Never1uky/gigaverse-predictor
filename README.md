@@ -42,9 +42,25 @@ The page interceptor observes Gigaverse responses to calculate local advice. It 
 
 Community import/export is user initiated. **Export community** is sanitized. **Export Full** may contain local action tokens and must not be shared. The optional community Pull performs a read-only GET from a user-configured HTTPS URL with credentials omitted.
 
+## Share move history
+
+The bundled combat dataset currently contains **2,169 sanitized exchanges** from **145 runs**, covering **502 fights** and **13 enemy IDs**:
+
+- [`data/community/combat.jsonl`](data/community/combat.jsonl)
+- [`data/community/fishing.jsonl`](data/community/fishing.jsonl) (empty until fishing submissions arrive)
+
+To contribute:
+
+1. Play normally with the extension enabled.
+2. Open the popup and select **Community data → Export community**.
+3. Review the generated `giga-community-YYYY-MM-DD.jsonl` file in a text editor.
+4. Attach it to the [community move history submissions issue](https://github.com/Never1uky/gigaverse-predictor/issues/2). If GitHub does not accept `.jsonl`, ZIP only that file first.
+
+Only share **Export community**. Do not upload a regular `gigaverse-combat-*.json`, fishing diagnostics, or **Export Full**: those formats can contain local action tokens or other private debugging data.
+
 ## Testing and feedback
 
-Please use the [public beta feedback issue](https://github.com/Never1uky/gigaverse-predictor/issues) for bugs and results.
+Please use the [public beta feedback issue](https://github.com/Never1uky/gigaverse-predictor/issues/1) for bugs and results.
 
 Suggested checks:
 
