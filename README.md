@@ -44,10 +44,12 @@ Community import/export is user initiated. **Export community** is sanitized. **
 
 ## Share move history
 
-The bundled combat dataset currently contains **2,169 sanitized exchanges** from **145 runs**, covering **502 fights** and **13 enemy IDs**:
+The public repository dataset currently contains **2,169 sanitized exchanges** from **145 runs**, covering **502 fights** and **13 enemy IDs**:
 
 - [`data/community/combat.jsonl`](data/community/combat.jsonl)
 - [`data/community/fishing.jsonl`](data/community/fishing.jsonl) (empty until fishing submissions arrive)
+
+The original v0.1.0 release ZIP was published before this first data batch. Users of that ZIP can download [`combat.jsonl`](https://raw.githubusercontent.com/Never1uky/gigaverse-predictor/main/data/community/combat.jsonl) and select **Community data → Import file**. A source checkout of the current `main` branch includes the dataset for **Load bundled dataset**.
 
 To contribute:
 

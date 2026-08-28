@@ -1,4 +1,4 @@
-# Community dataset (bundled)
+# Community dataset
 
 Shared **sanitized** combat/fishing move logs:
 
@@ -7,7 +7,7 @@ Shared **sanitized** combat/fishing move logs:
 
 The initial public combat dataset contains 2,169 exchanges from 145 runs (502 fights, 13 enemy IDs). The source Full/regular JSON export is not published because it contained local `actionToken` fields; only records converted through the community sanitizer are included.
 
-Nothing is uploaded automatically. Users load this pack via **Load bundled dataset**, or import a community file they saved themselves.
+Nothing is uploaded automatically. The original v0.1.0 release ZIP predates this data batch: download `combat.jsonl` from the current GitHub `main` branch and use **Import file**. A current source checkout can load it via **Load bundled dataset**.
 
 ## Contribute history
 
