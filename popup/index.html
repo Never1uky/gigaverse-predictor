@@ -32,9 +32,6 @@
         <h2>Fishing</h2>
         <p id="fish-status" class="muted">Idle</p>
         <pre id="fish-summary" class="compact-pre muted"></pre>
-        <div class="actions pred-actions">
-          <button type="button" id="btn-export-fishing">Export fishing</button>
-        </div>
       </section>
 
       <section class="block" id="stats-block">
@@ -47,15 +44,11 @@
       </section>
 
       <section class="block actions actions-tight">
-        <button type="button" id="btn-export-json">Export JSON</button>
-        <button type="button" id="btn-export-csv">Export CSV</button>
         <button type="button" id="btn-import">Import JSON</button>
-        <button type="button" id="btn-export-full" class="danger-outline">Export Full</button>
         <button type="button" id="btn-clear" class="danger">Clear Data</button>
         <button type="button" id="btn-debug">Debug</button>
         <input type="file" id="import-file" accept="application/json,.json" multiple hidden />
       </section>
-      <p class="warn-full">Export Full may contain actionToken — do not share.</p>
 
       <section class="block" id="community-block">
         <h2>Community</h2>

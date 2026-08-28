@@ -351,48 +351,6 @@ async function refresh() {
   }
 }
 function wireActions() {
-  bindClick("btn-export-json", async () => {
-    const res = await sendMessage({ type: "EXPORT_JSON" });
-    if (!(res == null ? void 0 : res.ok)) {
-      showMessage("Export failed");
-      return;
-    }
-    downloadText(res.filename, res.json, "application/json");
-    showMessage("JSON exported");
-  });
-  bindClick("btn-export-csv", async () => {
-    const res = await sendMessage({ type: "EXPORT_CSV" });
-    if (!(res == null ? void 0 : res.ok)) {
-      showMessage("Export failed");
-      return;
-    }
-    downloadText(res.filename, res.csv, "text/csv");
-    showMessage("CSV exported");
-  });
-  bindClick("btn-export-full", async () => {
-    const ok = window.confirm(
-      "Export Full is ONLY for yourself.\nIt may contain actionToken.\nDo NOT share Full files — use Export community / JSON / CSV instead.",
-    );
-    if (!ok) return;
-    const res = await sendMessage({ type: "EXPORT_FULL" });
-    if (!(res == null ? void 0 : res.ok)) {
-      showMessage("Export failed");
-      return;
-    }
-    downloadText(res.filename, res.json, "application/json");
-    showMessage("Full export saved (do not share)");
-  });
-
-  bindClick("btn-export-fishing", async () => {
-    const res = await sendMessage({ type: "EXPORT_FISHING" });
-    if (!(res == null ? void 0 : res.ok)) {
-      showMessage("Fishing export failed");
-      return;
-    }
-    downloadText(res.filename, res.json, "application/json");
-    showMessage(`Fishing sessions exported (${res.count ?? 0})`);
-  });
-
   bindClick("btn-community-export", async () => {
     const step1 = window.confirm(
       "Export community file includes:\n• Combat moves (dungeonId, fight, HP/charges, rock/paper/scissor)\n• Fishing steps (board 3|4, fish/bobber positions)\n\nDoes NOT include: login, JWT, cookies, wallet, actionToken.\n\nThe file is saved ONLY to your disk. The extension does not upload it.",

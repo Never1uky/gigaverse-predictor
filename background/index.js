@@ -10,7 +10,7 @@ import {
   updateCombatStats,
 } from "../assets/combat-predict.js";
 import { collectAbilityContext } from "../assets/abilities.js";
-import { ingestFishingCapture, ingestFishingHandUi, getFishingStatus, clearFishingData, clearFishingUiState, getAllFishingSessions, upsertCommunityFishing, getCommunityFishing, exportFishingDebugPayload } from "../assets/fishing-collector.js";
+import { ingestFishingCapture, ingestFishingHandUi, getFishingStatus, clearFishingData, clearFishingUiState, getAllFishingSessions, upsertCommunityFishing, getCommunityFishing } from "../assets/fishing-collector.js";
 import { isFishingActionName, looksLikeFishingPayload, isDungeonGameUrl } from "../assets/fishing.js";
 import {
   canPullFromUrl,
@@ -1126,47 +1126,6 @@ function computeStats(moves) {
     }
   };
 }
-const CSV_HEADERS = [
-  "timestamp",
-  "dungeonId",
-  "roomNumber",
-  "enemyCid",
-  "actionToken",
-  "playerMove",
-  "enemyMove",
-  "playerHp",
-  "enemyHp",
-  "playerShield",
-  "enemyShield",
-  "playerRockAtk",
-  "enemyRockAtk",
-  "playerPaperAtk",
-  "enemyPaperAtk",
-  "playerScissorAtk",
-  "enemyScissorAtk",
-  "playerWon",
-  "enemyWon",
-  "prevEnemyMove",
-  "playerBlocked",
-  "playerEvaded",
-  "playerCrit"
-];
-function csvEscape(value) {
-  if (value == null) return "";
-  const str = String(value);
-  if (/[",\n\r]/.test(str)) {
-    return `"${str.replace(/"/g, '""')}"`;
-  }
-  return str;
-}
-function movesToCsv(moves) {
-  const lines = [CSV_HEADERS.join(",")];
-  for (const move of moves) {
-    const row = CSV_HEADERS.map((key) => csvEscape(move[key]));
-    lines.push(row.join(","));
-  }
-  return lines.join("\n");
-}
 const DB_NAME = "gdc";
 const DB_VERSION = 2;
 const STORE_MOVES = "moves";
@@ -1630,11 +1589,6 @@ function debugLog(enabled, ...args) {
   if (!enabled) return;
   console.log("[GDC]", ...args);
 }
-function exportFilename(ext) {
-  const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-  return `gigaverse-combat-${stamp}.${ext}`;
-}
-
 async function broadcastFishing(view, inFishing, debug) {
   try {
     const tabs = await chrome.tabs.query({ url: ["https://gigaverse.io/*", "https://*.gigaverse.io/*", "https://builds.gigaverse.io/*"] });
@@ -2108,38 +2062,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           });
           break;
         }
-        case "EXPORT_JSON": {
+        case "EXPORT_JSON":
+        case "EXPORT_CSV":
+        case "EXPORT_FULL":
+        case "EXPORT_FISHING": {
           sendResponse({
-            ok: true,
-            filename: exportFilename("json"),
-            json: JSON.stringify(await getAllMoves(), null, 2)
-          });
-          break;
-        }
-        case "EXPORT_CSV": {
-          sendResponse({
-            ok: true,
-            filename: exportFilename("csv"),
-            csv: movesToCsv(await getAllMoves())
-          });
-          break;
-        }
-        case "EXPORT_FULL": {
-          const payload = {
-            moves: await getAllMoves(),
-            runContexts: await getAllRunContexts(),
-            intuitionEvents: await getAllIntuitionEvents(),
-            apiSnapshots: await getAllApiSnapshots(),
-            model: await getPredictorStore(),
-            meta: await getMeta(),
-            exportedAt: (/* @__PURE__ */ new Date()).toISOString(),
-            warning: "PRIVATE. May contain actionToken. Do not share."
-          };
-          sendResponse({
-            ok: true,
-            filename: exportFilename("full.json"),
-            json: JSON.stringify(payload, null, 2),
-            warning: "PRIVATE. May contain actionToken. Do not share."
+            ok: false,
+            error: "private_export_disabled",
+            hint: "Use Export community for a sanitized shareable file."
           });
           break;
         }
@@ -2363,17 +2293,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         case "GET_FISHING": {
           sendResponse(await getFishingStatus());
-          break;
-        }
-        case "EXPORT_FISHING": {
-          const payload = await exportFishingDebugPayload();
-          const day = new Date().toISOString().slice(0, 10);
-          sendResponse({
-            ok: true,
-            filename: `giga-fishing-sessions-${day}.json`,
-            json: JSON.stringify(payload, null, 2),
-            count: payload.sessions.length,
-          });
           break;
         }
         case "FISHING_HAND_UI": {

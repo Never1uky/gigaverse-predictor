@@ -1,4 +1,4 @@
-# Gigaverse Predictor 0.1 Beta
+# Gigaverse Predictor 0.1.1 Beta
 
 Passive Chrome MV3 combat and fishing advisor for [Gigaverse](https://gigaverse.io/). This is the first public beta and is distributed through GitHub, not the Chrome Web Store.
 
@@ -7,15 +7,15 @@ Passive Chrome MV3 combat and fishing advisor for [Gigaverse](https://gigaverse.
 - Data: local history with optional, user-initiated sanitized community import/export.
 - No autoplay and no extension-generated game actions.
 
-The extension source is kept directly in this repository. The downloadable artifact is attached to the [v0.1.0 GitHub release](https://github.com/Never1uky/gigaverse-predictor/releases/tag/v0.1.0).
+The extension source is kept directly in this repository. The downloadable artifact is attached to the [v0.1.1 GitHub release](https://github.com/Never1uky/gigaverse-predictor/releases/tag/v0.1.1).
 
 ## Install the public beta
 
-1. Download `gigaverse-predictor-v0.1.0.zip` and `gigaverse-predictor-v0.1.0.zip.sha256` from the GitHub release.
+1. Download `gigaverse-predictor-v0.1.1.zip` and `gigaverse-predictor-v0.1.1.zip.sha256` from the GitHub release.
 2. Verify the ZIP in PowerShell:
 
    ```powershell
-   (Get-FileHash .\gigaverse-predictor-v0.1.0.zip -Algorithm SHA256).Hash.ToLower()
+   (Get-FileHash .\gigaverse-predictor-v0.1.1.zip -Algorithm SHA256).Hash.ToLower()
    ```
 
 3. Compare the output with the value in the `.sha256` file.
@@ -40,7 +40,7 @@ The page interceptor observes Gigaverse responses to calculate local advice. It 
 - `webNavigation` detects Gigaverse navigations and frames so the interceptor can be restored after page transitions.
 - Host access is declared only for `gigaverse.io` and its subdomains, including `builds.gigaverse.io`. Content scripts are not registered for unrelated websites.
 
-Community import/export is user initiated. **Export community** is sanitized. **Export Full** may contain local action tokens and must not be shared. The optional community Pull performs a read-only GET from a user-configured HTTPS URL with credentials omitted.
+Community import/export is user initiated. **Export community** is the only public export and is sanitized. Raw JSON, CSV, Full, and fishing diagnostic exports are absent from the popup and rejected by the background worker. The optional community Pull performs a read-only GET from a user-configured HTTPS URL with credentials omitted.
 
 ## Share move history
 
@@ -49,7 +49,7 @@ The public repository dataset currently contains **2,169 sanitized exchanges** f
 - [`data/community/combat.jsonl`](data/community/combat.jsonl)
 - [`data/community/fishing.jsonl`](data/community/fishing.jsonl) (empty until fishing submissions arrive)
 
-The original v0.1.0 release ZIP was published before this first data batch. Users of that ZIP can download [`combat.jsonl`](https://raw.githubusercontent.com/Never1uky/gigaverse-predictor/main/data/community/combat.jsonl) and select **Community data → Import file**. A source checkout of the current `main` branch includes the dataset for **Load bundled dataset**.
+The v0.1.1 ZIP includes this dataset for **Load bundled dataset**. It can also be downloaded separately and loaded through **Community data → Import file**.
 
 To contribute:
 
@@ -58,7 +58,7 @@ To contribute:
 3. Review the generated `giga-community-YYYY-MM-DD.jsonl` file in a text editor.
 4. Attach it to the [community move history submissions issue](https://github.com/Never1uky/gigaverse-predictor/issues/2). If GitHub does not accept `.jsonl`, ZIP only that file first.
 
-Only share **Export community**. Do not upload a regular `gigaverse-combat-*.json`, fishing diagnostics, or **Export Full**: those formats can contain local action tokens or other private debugging data.
+Only share **Export community**. Legacy raw export formats can contain local action tokens or other private debugging data and are disabled in v0.1.1.
 
 ## Testing and feedback
 
@@ -76,7 +76,7 @@ Do not attach a seed phrase, private key, JWT, cookies, action tokens, or a Full
 
 ## Evidence and limits
 
-The release passed 105 automated tests. The continuation audit used 1,764 historical moves; on 1,297 scoreable rows, expected HP after the advised move increased from 14.69 to 14.94 while estimated death probability remained 7.8%.
+The release passed 106 automated tests. The continuation audit used 1,764 historical moves; on 1,297 scoreable rows, expected HP after the advised move increased from 14.69 to 14.94 while estimated death probability remained 7.8%.
 
 This does not yet prove greater end-to-end dungeon depth. Historical run-end reasons are incomplete, and oracle replay can overstate live performance. Public beta feedback is intended to measure that gap.
 

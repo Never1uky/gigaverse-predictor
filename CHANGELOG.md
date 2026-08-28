@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1 — safe public export
+- Removed raw JSON, CSV, Full, and fishing diagnostic export controls from the popup.
+- Background rejects all legacy private export messages with `private_export_disabled`; only sanitized **Export community** remains shareable.
+- Bundles the initial privacy-safe community history (2,169 combat exchanges). See `CHANGELOG-0.1.1.md`.
+
 ## 0.1.0 — first public beta
 - First release intended for public testing outside the Chrome Web Store.
 - Passive combat/fishing advisor, local history, sanitized community import/export, and bounded continuation EV.

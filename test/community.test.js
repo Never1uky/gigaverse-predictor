@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import {
   canPullFromUrl,
   combatModelKey,
@@ -39,6 +40,23 @@ test("community export rejects text that still contains secrets", () => {
   assert.equal(communityExportContainsSecrets('{"actionToken":"abc"}'), true);
   assert.equal(communityExportContainsSecrets('{"jwt":"x"}'), true);
   assert.equal(communityExportContainsSecrets('wallet 0x1234567890123456789012345678901234567890'), true);
+});
+
+test("public popup exposes only sanitized community export", () => {
+  const popupHtml = fs.readFileSync(new URL("../popup/index.html", import.meta.url), "utf8");
+  const popupJs = fs.readFileSync(new URL("../popup/index.js", import.meta.url), "utf8");
+  const background = fs.readFileSync(new URL("../background/index.js", import.meta.url), "utf8");
+
+  for (const id of ["btn-export-json", "btn-export-csv", "btn-export-full", "btn-export-fishing"]) {
+    assert.doesNotMatch(popupHtml, new RegExp(`id=["']${id}["']`));
+  }
+  assert.doesNotMatch(popupJs, /type:\s*"EXPORT_(?:JSON|CSV|FULL|FISHING)"/);
+  assert.match(
+    background,
+    /case "EXPORT_JSON":\s*case "EXPORT_CSV":\s*case "EXPORT_FULL":\s*case "EXPORT_FISHING":\s*\{[\s\S]*?error: "private_export_disabled"/,
+  );
+  assert.doesNotMatch(background, /JSON\.stringify\(await getAllMoves\(\)/);
+  assert.doesNotMatch(background, /const CSV_HEADERS/);
 });
 
 test("EXPORT_COMMUNITY requires explicit confirm flag (no auto-export API)", async () => {
