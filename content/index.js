@@ -1,3 +1,6 @@
+(() => {
+if (globalThis.__GDC_CONTENT_INSTALLED__) return;
+globalThis.__GDC_CONTENT_INSTALLED__ = true;
 const LABELS = {
   rock: "Sword",
   paper: "Shield",
@@ -73,7 +76,8 @@ function escapeHtml(text) {
 function render() {
   if (!enabled || !inCombat) {
     if (panel) panel.style.display = "none";
-    hideFishingOverlay();
+    if (inCombat) hideFishingOverlay();
+    else restoreFishingOverlay();
     return;
   }
   hideFishingOverlay();
@@ -85,21 +89,31 @@ function render() {
   }
   const p = lastPrediction;
   const unavailable = p.unavailable ?? [];
+  const rankedByMove = Object.fromEntries((p.ranked ?? []).map((row) => [row.move, row]));
   const rows = ORDER.map((m) => {
     const pct = p.percents[m];
+    const row = rankedByMove[m];
+    const ev =
+      row?.ev != null && Number.isFinite(row.ev)
+        ? `${row.ev >= 0 ? "+" : ""}${row.ev.toFixed(2)}`
+        : "—";
+    const death =
+      p.hpKnown && row?.pDeath != null
+        ? `${Math.round(row.pDeath * 100)}%`
+        : "—";
     const ruled = p.ruledOutMove === m || unavailable.includes(m);
     const mark = ruled ? p.ruledOutMove === m ? " · ruled out" : " · 0 charges" : "";
     const weight = p.topMove === m ? "font-weight:700;color:#9fe6b8" : "font-weight:500";
-    return `<div style="${weight}">${LABELS[m]}  ${pct}%${mark}</div>`;
+    return `<div style="${weight}">${LABELS[m]}  ${pct}% · EV ${ev} · D ${death}${mark}</div>`;
   }).join("");
   // Play must be EV recommendedMove — never topMove of the enemy.
   const playMove = p.recommendedMove ?? null;
   const play = playMove ? LABELS[playMove] : "—";
-  const enemy = p.enemyCid != null ? `#${p.enemyCid}` : "—";
+  const enemy = p.enemyCid != null && p.enemyCid > 0 ? `#${p.enemyCid}` : "—";
   const whyLines = buildCombatWhyLines(p);
   const whyHtml = whyLines
     .map((line) => {
-      const warn = line.includes("⚠") || /you die|умираешь|Not /i.test(line);
+      const warn = line.includes("⚠") || /you die|умираешь|Not |lethal/i.test(line);
       return `<div style="margin-top:3px;opacity:.85;${warn ? "color:#f0c36d;font-weight:600" : ""}">${escapeHtml(line)}</div>`;
     })
     .join("");
@@ -118,13 +132,17 @@ function buildCombatWhyLines(p) {
   const rec = p.recommendedMove;
   const topPct = top != null ? p.percents?.[top] : null;
 
-  if (top && counter && rec && rec === counter && topPct != null) {
+  if (p.flatEv && counter) {
+    lines.push(`EV≈flat, counter = ${LABELS[counter]}`);
+  } else if (top && counter && rec && rec === counter && topPct != null) {
     lines.push(`${LABELS[rec]}, because it beats their ${LABELS[top]} (${topPct}%)`);
   } else if (top && counter && rec && rec !== counter && topPct != null) {
     lines.push(`Their likely ${LABELS[top]} (${topPct}%) → counter would be ${LABELS[counter]}`);
   }
 
-  if (p.hpKnown && (p.pDeath != null || p.expectedHpAfter != null)) {
+  if (p.allLethal) {
+    lines.push("all replies lethal — pick lowest death");
+  } else if (p.hpKnown && (p.pDeath != null || p.expectedHpAfter != null)) {
     const deathPct = Math.round((p.pDeath ?? 0) * 100);
     const hp = p.expectedHpAfter == null ? "?" : Math.round(p.expectedHpAfter);
     const sh = p.expectedShieldAfter == null ? "?" : Math.round(p.expectedShieldAfter);
@@ -132,6 +150,7 @@ function buildCombatWhyLines(p) {
   }
   if (p.locked && p.topMove) lines.push(`Enemy must play ${LABELS[p.topMove]}`);
   for (const note of p.vetoNotes ?? []) {
+    if (/all replies lethal/i.test(note)) continue;
     lines.push(uiMoveNames(note));
   }
   if (p.burnOnShieldWin) lines.push("⚠ Shield win burns you");
@@ -147,8 +166,7 @@ function buildCombatWhyLines(p) {
 
   for (const line of fromWhy) {
     if (!lines.some((existing) => existing.toLowerCase() === line.toLowerCase())) {
-      // Prefer explicit counter/death lines already added; keep unique extras (lock, only legal, etc.)
-      if (/because it beats|counter would be|Death \d|Enemy must|burns you|Safer:|you die|Not /i.test(line) &&
+      if (/because it beats|counter would be|Death \d|Enemy must|burns you|Safer:|you die|Not |EV≈flat|lethal/i.test(line) &&
           lines.some((e) => e.includes(line.slice(0, 12)))) {
         continue;
       }
@@ -156,8 +174,7 @@ function buildCombatWhyLines(p) {
     }
   }
 
-  // Cap to 3 user-facing lines (prompt: 1–3)
-  return lines.slice(0, 3);
+  return lines.slice(0, 4);
 }
 
 function uiMoveNames(text) {
@@ -171,7 +188,24 @@ function hideFishingOverlay() {
   const el = document.getElementById("gfp-fish-overlay");
   if (el) el.style.display = "none";
   if (fishPanel) fishPanel.style.display = "none";
-  lastFishView = null;
+}
+
+function restoreFishingOverlay() {
+  if (inCombat) {
+    hideFishingOverlay();
+    return;
+  }
+  // Only restore an *active* fishing session — never from stale cell / lastPrediction alone.
+  void chrome.runtime.sendMessage({ type: "GET_FISHING" }).then((res) => {
+    if (inCombat) return;
+    if (res?.ok && res.inFishing && res.view) {
+      lastFishView = res.view;
+      paintFishingOverlay(res.view);
+    } else {
+      lastFishView = null;
+      hideFishingOverlay();
+    }
+  }).catch(() => void 0);
 }
 
 function updatePredictionOverlay(prediction, predictionEnabled, combatActive = false) {
@@ -315,7 +349,7 @@ window.addEventListener("message", (event) => {
         if (result.enemyCid != null) console.log("[GDC] enemyCid:", result.enemyCid);
         if (result.playerMove != null) console.log("[GDC] playerMove:", result.playerMove);
         if (result.enemyMove != null) console.log("[GDC] enemyMove:", result.enemyMove);
-        if (result.actionToken != null) console.log("[GDC] actionToken:", result.actionToken);
+        if (result.actionToken != null) console.log("[GDC] actionToken: present");
         if (result.inCombat != null) console.log("[GDC] inCombat:", result.inCombat);
         if (result.saved) console.log("[GDC] saved");
         else if (result.duplicate) console.log("[GDC] skipped duplicate");
@@ -376,20 +410,52 @@ startChargeDomWatcher((moves) => {
   void chrome.runtime.sendMessage({ type: "UNAVAILABLE_MOVES_UI", moves });
   if (moves.length) console.log("[GDC][PRED] ui 0-charges:", moves.join(","));
 });
+function looksLikeFishingUiText(text) {
+  const t = String(text ?? "").toLowerCase();
+  if (/\bredraw\b/.test(t)) return true;
+  if (t.includes("fintuition") || t.includes("catch meter")) return true;
+  if (t.includes("fishing") && (t.includes("mana") || t.includes("hand") || t.includes("redraw"))) return true;
+  return false;
+}
+
+function looksLikeHubScreen(text) {
+  const t = String(text ?? "").toLowerCase();
+  if (looksLikeFishingUiText(t)) return false;
+  if (t.includes("choose your offering") || t.includes("press e to interact")) return true;
+  if (t.includes("adventure rewards")) return true;
+  if (t.includes("retry") && (t.includes("exit") || t.includes("leave") || t.includes("adventure"))) {
+    return true;
+  }
+  return false;
+}
+
+function looksLikeFishingEndedScreen(text) {
+  const t = String(text ?? "").toLowerCase();
+  if (t.includes("fish escaped")) return true;
+  if (t.includes("cast again")) return true;
+  if (t.includes("start fishing")) return true;
+  return false;
+}
+
+function looksLikeClearOverlaysScreen(text) {
+  return looksLikeHubScreen(text) || looksLikeFishingEndedScreen(text);
+}
+
 function startHubWatcher() {
-  let lastHub = false;
+  let lastClear = false;
   const scan = () => {
     var _a;
-    const text = (((_a = document.body) == null ? void 0 : _a.innerText) ?? "").toLowerCase();
-    const hub = text.includes("choose your offering") || text.includes("press e to interact");
-    if (hub && !lastHub) {
-      lastHub = true;
+    const text = (((_a = document.body) == null ? void 0 : _a.innerText) ?? "");
+    const clear = looksLikeClearOverlaysScreen(text);
+    if (clear && !lastClear) {
+      lastClear = true;
       void chrome.runtime.sendMessage({ type: "HUB_UI", inCombat: false });
       updatePredictionOverlay(null, true, false);
+      lastFishView = null;
       updateFishingOverlay(null, false, false);
-      console.log("[GDC][PRED] hub detected — hide overlay");
-    } else if (!hub) {
-      lastHub = false;
+      console.log("[GDC][PRED] clear-overlays screen — hide combat+fishing");
+    } else if (!clear) {
+      lastClear = false;
     }
   };
   window.setInterval(scan, 2e3);
@@ -403,6 +469,14 @@ void chrome.runtime.sendMessage({ type: "GET_PREDICTION_META" }).then((res) => {
       Boolean(res.predictionEnabled),
       Boolean(res.inCombat)
     );
+  }
+}).catch(() => void 0);
+void chrome.runtime.sendMessage({ type: "GET_FISHING" }).then((res) => {
+  if (inCombat) return;
+  if (res?.ok && res.inFishing && res.view) {
+    updateFishingOverlay(res.view, true, false);
+  } else {
+    hideFishingOverlay();
   }
 }).catch(() => void 0);
 
@@ -445,84 +519,129 @@ function fishCellStyle(n, current, possible, bobber) {
   return "background:#1a2428;color:#8aa";
 }
 
-function renderFishGrid(current, possible, bobber) {
-  const cells = Array.from({ length: 16 }, (_, i) => i + 1).map((n) => {
+function renderFishGrid(current, possible, bobber, board) {
+  const size = board === 3 ? 3 : 4;
+  const count = size * size;
+  const cells = Array.from({ length: count }, (_, i) => i + 1).map((n) => {
     let label = String(n);
     if (n === current) label = "🐟";
-    else if (n === bobber) label = "●";
-    return `<div style="width:22px;height:22px;display:flex;align-items:center;justify-content:center;border-radius:3px;font-size:10px;${fishCellStyle(n, current, possible, bobber)}">${label}</div>`;
+    else if (board !== 3 && n === bobber) label = "●";
+    return `<div style="width:22px;height:22px;display:flex;align-items:center;justify-content:center;border-radius:3px;font-size:10px;${fishCellStyle(n, current, possible, board === 3 ? null : bobber)}">${label}</div>`;
   }).join("");
-  return `<div style="display:grid;grid-template-columns:repeat(4,22px);gap:3px;margin-top:6px">${cells}</div>`;
+  return `<div style="display:grid;grid-template-columns:repeat(${size},22px);gap:3px;margin-top:6px">${cells}</div>`;
+}
+
+function paintFishingOverlay(view) {
+  const el = ensureFishPanel();
+  const possible = view.possibleCells ?? [];
+  const posList = possible.length ? possible.join(" / ") : "—";
+  const board =
+    view.board === 3 || view.gridSize === 3
+      ? 3
+      : view.board === 4 || view.gridSize === 4
+        ? 4
+        : possible.some((c) => c > 9) || view.bobberCell
+          ? 4
+          : view.currentCell != null && view.currentCell <= 9 && !view.bobberCell
+            ? 3
+            : 4;
+  const title = board === 3 ? "Fishing Advisor · 3×3" : board === 4 ? "Fishing Advisor · 4×4" : "Fishing Advisor";
+  const fishLine =
+    view.currentCell != null && view.currentPos
+      ? `Fish: cell ${view.currentCell} (${view.currentPos.x},${view.currentPos.y})`
+      : "Fish: unknown";
+  const bobberLine =
+    board === 4
+      ? view.bobberCell != null
+        ? `Bobber: cell ${view.bobberCell}`
+        : "Bobber: unknown"
+      : "";
+  const modeLine = `Mode: ${view.label || view.mode || "—"}`;
+  const nextLine = `Next cells: ${posList}`;
+  const playLine = escapeHtml(view.recommendation ?? "Waiting for hand...");
+  const whyLine = view.why ? `<div style="margin-top:4px;opacity:.85">${escapeHtml(view.why)}</div>` : "";
+  const manaLine =
+    view.mana != null
+      ? `<div style="margin-top:3px;opacity:.75;font-size:11px">Mana ${view.mana}${view.manaMax != null ? "/" + view.manaMax : ""}</div>`
+      : "";
+  const focusNote =
+    board === 4
+      ? view.focusAssumption
+        ? `<div style="margin-top:3px;opacity:.7;font-size:11px">Focus not in API — move unconstrained (assumption)</div>`
+        : view.focus != null
+          ? `<div style="margin-top:3px;opacity:.7;font-size:11px">Focus ${view.focus}${view.focusMax != null ? "/" + view.focusMax : ""}</div>`
+          : ""
+      : "";
+  const ascii = view.patternAscii
+    ? `<pre style="margin:4px 0 0;opacity:.65;font-size:10px;line-height:1.2">${escapeHtml(view.patternAscii)}</pre>`
+    : "";
+  el.style.display = "block";
+  el.innerHTML = `
+    <div style="opacity:.8;margin-bottom:4px">${escapeHtml(title)}</div>
+    <div>${escapeHtml(fishLine)}</div>
+    ${bobberLine ? `<div>${escapeHtml(bobberLine)}</div>` : ""}
+    <div>${escapeHtml(modeLine)}</div>
+    <div>${escapeHtml(nextLine)}</div>
+    <div style="margin-top:6px;font-weight:700;color:#9fe6b8">${playLine}</div>
+    ${whyLine}
+    ${manaLine}
+    ${focusNote}
+    ${ascii}
+    ${renderFishGrid(view.currentCell, possible, view.bobberCell ?? view.advice?.bobberCell, board)}
+  `;
 }
 
 function updateFishingOverlay(view, inFishing, debug) {
   fishDebug = Boolean(debug);
   const el = ensureFishPanel();
+  // Page overlay only while an active fishing session is reported — not on Loading,
+  // combat leftovers, or diagnostic-only /api/fishing/state captures.
   const active =
-    Boolean(inFishing) &&
     Boolean(view) &&
     !inCombat &&
-    Boolean(view.inFishing !== false) &&
-    (view.currentCell != null ||
-      view.bobberCell != null ||
-      (Array.isArray(view.hand) && view.hand.length > 0 && view.mana != null));
-  if (!active || /waiting for fishing/i.test(view?.status ?? "")) {
+    (Boolean(inFishing) || Boolean(view.inFishing));
+  if (!active) {
     lastFishView = null;
-    el.style.display = "none";
+    hideFishingOverlay();
     return;
   }
   lastFishView = view;
-  el.style.display = "block";
-  const hist = (view.history ?? []).join(" → ") || "—";
-  const possible = view.possibleCells ?? [];
-  const posList = possible.length ? possible.join(" / ") : "—";
-  const fishLine =
-    view.currentCell != null && view.currentPos
-      ? `Fish: cell ${view.currentCell} (${view.currentPos.x},${view.currentPos.y})`
-      : "Fish: unknown";
-  const modeLine = `Mode: ${view.label || view.mode || "—"}`;
-  const nextLine = `Next cells: ${posList}`;
-  const playLine = escapeHtml(view.recommendation ?? "Waiting for hand...");
-  const whyLine = view.why ? `<div style="margin-top:4px;opacity:.85">${escapeHtml(view.why)}</div>` : "";
-  const focusNote = view.focusAssumption
-    ? `<div style="margin-top:3px;opacity:.7;font-size:11px">Focus not in API — move unconstrained (assumption)</div>`
-    : view.focus != null
-      ? `<div style="margin-top:3px;opacity:.7;font-size:11px">Focus ${view.focus}${view.focusMax != null ? "/" + view.focusMax : ""}</div>`
-      : "";
-  const ascii = view.patternAscii
-    ? `<pre style="margin:4px 0 0;opacity:.65;font-size:10px;line-height:1.2">${escapeHtml(view.patternAscii)}</pre>`
-    : "";
-  el.innerHTML = `
-    <div style="opacity:.8;margin-bottom:4px">Fishing Advisor</div>
-    <div>${escapeHtml(fishLine)}</div>
-    <div>${escapeHtml(modeLine)}</div>
-    <div>${escapeHtml(nextLine)}</div>
-    <div style="margin-top:6px;font-weight:700;color:#9fe6b8">${playLine}</div>
-    ${whyLine}
-    ${focusNote}
-    ${ascii}
-    ${renderFishGrid(view.currentCell, possible, view.bobberCell ?? view.advice?.bobberCell)}
-  `;
-  if (fishDebug) console.log("[GFP] overlay", view.mode, view.currentCell, possible);
+  paintFishingOverlay(view);
+  if (fishDebug) console.log("[GFP] overlay", view.mode, view.currentCell, view.board);
+}
+
+function inferBoardFromDom() {
+  const grids = Array.from(document.querySelectorAll('[class*="grid"],[class*="board"],[class*="pond"]')).slice(0, 20);
+  for (const g of grids) {
+    const n = g.children?.length ?? 0;
+    if (n === 16) return 4;
+    if (n === 9) return 3;
+  }
+  return null;
 }
 
 function startFishingHandWatcher() {
   let lastKey = "";
   const scan = () => {
     if (inCombat) return;
-    const text = (document.body?.innerText ?? "").toLowerCase();
-    // Require fishing-specific UI, not incidental "catch"/"mana" in combat chrome.
-    const fishingUi =
-      (text.includes("fishing") || text.includes("catch meter") || text.includes("fintuition")) &&
-      (text.includes("mana") || text.includes("hand") || text.includes("redraw"));
-    if (!fishingUi) return;
+    const text = document.body?.innerText ?? "";
+    const fishingUi = looksLikeFishingUiText(text);
     const cards = parseHandFromDom();
-    if (!cards.length) return;
-    const key = JSON.stringify(cards.map((c) => [c.name, c.mana, c.hits, c.crits]));
+    if (!fishingUi && cards.length < 3) return;
+    if (!cards.length && fishingUi && fishDebug) {
+      console.log("[GFP] fishing UI visible, no cards parsed yet");
+    }
+    const board = inferBoardFromDom() ?? (fishingUi ? 4 : null);
+    const key = JSON.stringify({ board, fishingUi, n: cards.length, cards: cards.map((c) => [c.name, c.mana, c.hits, c.crits]) });
     if (key === lastKey) return;
     lastKey = key;
-    void chrome.runtime.sendMessage({ type: "FISHING_HAND_UI", cards });
-    if (fishDebug) console.log("[GFP] hand from UI", cards.map((c) => c.name).join(", "));
+    void chrome.runtime.sendMessage({
+      type: "FISHING_HAND_UI",
+      cards,
+      fishingUi: Boolean(fishingUi),
+      board,
+    });
+    if (fishDebug) console.log("[GFP] hand from UI", cards.map((c) => c.name).join(", "), "board", board);
   };
   window.setInterval(scan, 2000);
 }
@@ -569,3 +688,4 @@ function parseHandFromDom() {
 
 
 startFishingHandWatcher();
+})();

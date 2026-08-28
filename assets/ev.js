@@ -6,13 +6,18 @@ import {
   MAX_BURN_STACKS
 } from "./abilities.js";
 
-const KILL = 10000;
-const DEATH = 1e6;
-const LOCK_PENALTY = 12;
-const LAMBDA_FRAGILE = 1.6;
-const LAMBDA_NORMAL = 1.1;
-const LAMBDA_UNKNOWN_HP = 2.2;
+/** Survival-first utility weights (Balanced). U ∈ [-1, 1]. */
+const W_SURV = 0.55;
+const W_DMG = 0.35;
+const W_KILL = 0.1;
+const KILL_BONUS = 0.25;
+const LOCK_PENALTY_U = 0.03;
+const HP_UNKNOWN_PRIOR = 0.7;
 const DEATH_VETO = 0.35;
+/** Second-ply weight in continuation mix. V = (1-γ)·U1 + γ·bestU2 */
+const LOOKAHEAD_GAMMA = 0.65;
+/** Default search depth (1 = one-step only, 2 = +continuation). */
+const DEFAULT_LOOKAHEAD_DEPTH = 2;
 
 function num(value, fallback = 0) {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
@@ -274,22 +279,35 @@ function resolveRound(us, enemy, ourMove, theirMove, opts = {}) {
   };
 }
 
+function clamp01(x) {
+  return Math.max(0, Math.min(1, x));
+}
+
+/**
+ * Per-outcome utility in [-1, 1]. Survival (square HP ratio) dominates damage/kill.
+ * Death alone → -1; mutual death → 0. Burn/lifesteal already reflected in after HP via resolveRound.
+ */
 function scoreOutcome(us, enemy, after, ourMove) {
   const hpKnown = us.hp != null;
   const weDead = hpKnown && after.us.hp <= 0;
   const theyDead = after.enemy.hp != null && after.enemy.hp <= 0;
-  if (weDead && !theyDead) return -DEATH;
-  if (theyDead && !weDead) return KILL;
+  if (weDead && !theyDead) return -1;
   if (weDead && theyDead) return 0;
-  const hpMax = us.hpMax != null && us.hpMax > 0 ? us.hpMax : null;
-  const ratio = hpKnown && hpMax != null ? us.hp / hpMax : 1;
-  const fragile = hpKnown && (ratio < 0.3 || num(us.shield, 0) <= 3);
-  const lambda = !hpKnown ? LAMBDA_UNKNOWN_HP : fragile ? LAMBDA_FRAGILE : LAMBDA_NORMAL;
-  const theirLoss = pool(enemy) - pool(after.enemy);
-  const ourLoss = pool(us) - pool(after.us);
-  let score = theirLoss - lambda * ourLoss;
-  if (us[ourMove]?.charges === 1 && !theyDead) score -= LOCK_PENALTY;
-  return score;
+
+  let hpR;
+  if (!hpKnown) {
+    hpR = HP_UNKNOWN_PRIOR;
+  } else {
+    const hpMax = us.hpMax != null && us.hpMax > 0 ? us.hpMax : Math.max(num(after.us.hp, 0), 1);
+    hpR = clamp01(num(after.us.hp, 0) / hpMax);
+  }
+  const surv = hpR * hpR;
+  const enemyBefore = Math.max(pool(enemy), 1);
+  const enR = clamp01((pool(enemy) - pool(after.enemy)) / enemyBefore);
+  const killB = theyDead && !weDead ? KILL_BONUS : 0;
+  let u = W_SURV * surv + W_DMG * enR + W_KILL * killB;
+  if (us[ourMove]?.charges === 1 && !theyDead) u -= LOCK_PENALTY_U;
+  return Math.max(-1, Math.min(1, u));
 }
 
 function topEnemyMove(P) {
@@ -325,11 +343,21 @@ function whyText(pick, ranked, P, locked, opts = {}) {
   const lines = [];
   const label = MOVE_UI_LABELS[pick.move];
   lines.push(`Play: ${label}`);
+  if (opts.allLethal) {
+    lines.push("all replies lethal — pick lowest death");
+  }
+  if (opts.flatEv) {
+    const top = topEnemyMove(P);
+    const counter = top ? RPS_COUNTER[top] : null;
+    if (counter) {
+      lines.push(`EV≈flat, counter = ${MOVE_UI_LABELS[counter]}`);
+    }
+  }
 
   const top = topEnemyMove(P);
   const counter = top ? RPS_COUNTER[top] : null;
   const topPct = top != null ? Math.round(num(P?.[top], 0) * 1000) / 10 : null;
-  if (top && counter && pick.move === counter && topPct != null) {
+  if (top && counter && pick.move === counter && topPct != null && !opts.flatEv) {
     lines.push(`${label}, because it beats their ${MOVE_UI_LABELS[top]} (${topPct}%)`);
   } else if (top && counter && pick.move !== counter && topPct != null) {
     lines.push(`Their likely ${MOVE_UI_LABELS[top]} (${topPct}%) → counter would be ${MOVE_UI_LABELS[counter]}`);
@@ -386,10 +414,50 @@ function legalOnlyOne(ranked, move) {
   return legal.length === 1 && legal[0]?.move === move;
 }
 
+/**
+ * Best one-step expected U from a post-exchange state (no veto — leaf value only).
+ */
+function bestOneStepEv(us, enemy, P, opts) {
+  const legal = legalMoves(us);
+  if (legal.length === 0) return 0;
+  let best = -Infinity;
+  for (const ourMove of legal) {
+    let ev = 0;
+    let mass = 0;
+    for (const theirMove of MOVE_ORDER) {
+      const p = num(P?.[theirMove], 0);
+      if (p <= 0) continue;
+      const after = resolveRound(us, enemy, ourMove, theirMove, opts);
+      ev += p * scoreOutcome(us, enemy, after, ourMove);
+      mass += p;
+    }
+    if (mass > 0 && mass < 1) ev /= mass;
+    else if (mass <= 0) continue;
+    if (ev > best) best = ev;
+  }
+  return best === -Infinity ? 0 : best;
+}
+
+/**
+ * Leaf utility: one-step U, optionally mixed with best continuation under same P.
+ * Depth 1 → U only; depth ≥2 → (1-γ)·U + γ·cont (clamped to [-1,1]).
+ */
+function leafUtility(us, enemy, after, ourMove, P, opts, depth) {
+  const u1 = scoreOutcome(us, enemy, after, ourMove);
+  if (depth < 2 || after.weDead || after.theyDead) return u1;
+  // Unknown HP: stay shallower / more conservative (no invented continuation).
+  if (us.hp == null) return u1;
+  const cont = bestOneStepEv(after.us, after.enemy, P, opts);
+  const mixed = (1 - LOOKAHEAD_GAMMA) * u1 + LOOKAHEAD_GAMMA * cont;
+  return Math.max(-1, Math.min(1, mixed));
+}
+
 function chooseBestReply(us, enemy, P, opts = {}) {
   const legalUs = legalMoves(us);
   const locked = MOVE_ORDER.filter((m) => num(P?.[m], 0) > 0.999).length === 1;
   const hpKnown = us?.hp != null;
+  const lookaheadDepth =
+    opts.lookaheadDepth != null ? num(opts.lookaheadDepth, DEFAULT_LOOKAHEAD_DEPTH) : DEFAULT_LOOKAHEAD_DEPTH;
   if (legalUs.length === 0) {
     return {
       move: null,
@@ -403,7 +471,10 @@ function chooseBestReply(us, enemy, P, opts = {}) {
       hpKnown,
       vetoNotes: [],
       burnOnShieldWin: Boolean(opts.enemyAbilities?.burnOnPaperWin),
-      saferAlt: null
+      saferAlt: null,
+      flatEv: false,
+      allLethal: false,
+      lookaheadDepth
     };
   }
   const ranked = [];
@@ -418,7 +489,7 @@ function chooseBestReply(us, enemy, P, opts = {}) {
       const p = num(P?.[theirMove], 0);
       if (p <= 0) continue;
       const after = resolveRound(us, enemy, ourMove, theirMove, opts);
-      ev += p * scoreOutcome(us, enemy, after, ourMove);
+      ev += p * leafUtility(us, enemy, after, ourMove, P, opts, lookaheadDepth);
       mass += p;
       if (hpKnown && after.weDead) pDeath += p;
       if (after.us.hp != null) {
@@ -450,14 +521,21 @@ function chooseBestReply(us, enemy, P, opts = {}) {
       hpKnown
     });
   }
+  const hasNonLethal = ranked.some((row) => !row.vetoBecause);
+  const allLethal = hpKnown && ranked.length > 0 && ranked.every((row) => Boolean(row.vetoBecause));
   for (const row of ranked) {
+    // Certain-kill line ("you die if they X") hard-vetoes when a safer reply exists.
+    if (hasNonLethal && row.vetoBecause) {
+      row.vetoed = true;
+    }
     if (row.pDeath >= DEATH_VETO && ranked.some((other) => other.pDeath < row.pDeath)) {
       row.vetoed = true;
     }
   }
   ranked.sort((a, b) => {
     if (a.vetoed !== b.vetoed) return a.vetoed ? 1 : -1;
-    const dying = a.pDeath >= DEATH_VETO || b.pDeath >= DEATH_VETO;
+    const dying =
+      allLethal || a.pDeath >= DEATH_VETO || b.pDeath >= DEATH_VETO;
     if (dying) {
       if (a.pDeath !== b.pDeath) return a.pDeath - b.pDeath;
       const hpA = a.expectedHpAfter ?? -1;
@@ -468,18 +546,40 @@ function chooseBestReply(us, enemy, P, opts = {}) {
     if (a.pDeath !== b.pDeath) return a.pDeath - b.pDeath;
     return MOVE_ORDER.indexOf(a.move) - MOVE_ORDER.indexOf(b.move);
   });
-  const pick = ranked[0];
+  let pick = ranked.find((row) => !row.vetoed) ?? ranked[0];
+  let flatEv = false;
+  const probs = MOVE_ORDER.map((m) => num(P?.[m], 0));
+  const spread = Math.max(...probs) - Math.min(...probs);
+  if (
+    pick &&
+    !allLethal &&
+    spread < 0.05 &&
+    pick.pDeath < 0.05 &&
+    !pick.vetoed
+  ) {
+    const top = topEnemyMove(P);
+    const counter = top ? RPS_COUNTER[top] : null;
+    const counterRow = ranked.find((row) => row.move === counter && !row.vetoed);
+    if (counterRow && counterRow.move !== pick.move) {
+      pick = counterRow;
+      flatEv = true;
+    }
+  }
   const vetoNotes = ranked
     .filter((row) => row.vetoBecause)
     .map((row) => `${MOVE_UI_LABELS[row.move]}: you die if they ${MOVE_UI_LABELS[row.vetoBecause]}`);
+  if (allLethal) {
+    vetoNotes.unshift("all replies lethal — pick lowest death");
+  }
   const saferAlt = ranked.find(
     (row) => row.move !== pick.move && pick.hpKnown && pick.pDeath - row.pDeath >= 0.2
   );
+  const whyOpts = { ...opts, flatEv, allLethal };
   return {
     move: pick.move,
     ev: pick.ev,
     ranked: ranked.slice(0, 3),
-    why: whyText(pick, ranked, P, locked, opts),
+    why: whyText(pick, ranked, P, locked, whyOpts),
     locked,
     pDeath: pick.pDeath,
     expectedHpAfter: pick.expectedHpAfter,
@@ -487,7 +587,10 @@ function chooseBestReply(us, enemy, P, opts = {}) {
     hpKnown,
     vetoNotes,
     burnOnShieldWin: Boolean(opts.enemyAbilities?.burnOnPaperWin),
-    saferAlt: saferAlt ? { move: saferAlt.move, pDeath: saferAlt.pDeath } : null
+    saferAlt: saferAlt ? { move: saferAlt.move, pDeath: saferAlt.pDeath } : null,
+    flatEv,
+    allLethal,
+    lookaheadDepth
   };
 }
 
@@ -530,6 +633,8 @@ function fightersFromFeatures(features) {
 
 export {
   DEATH_VETO,
+  DEFAULT_LOOKAHEAD_DEPTH,
+  LOOKAHEAD_GAMMA,
   MOVE_ORDER,
   MOVE_UI_LABELS,
   RPS_BEATS,
@@ -541,5 +646,6 @@ export {
   isUsableCharge,
   legalMoves,
   listUnavailable,
-  resolveRound
+  resolveRound,
+  scoreOutcome
 };

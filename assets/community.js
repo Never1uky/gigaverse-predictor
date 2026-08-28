@@ -142,11 +142,51 @@ export async function combatRecordFromMove(move, extras = {}) {
  * Detect fishing board size from session/response signals.
  * 4 = Dendren (bobber/focus), 3 = pier. null = unknown (skip export).
  */
+function readFishingGridSize(response) {
+  if (!response || typeof response !== "object") return null;
+  const stack = [response];
+  const seen = new Set();
+  let n = 0;
+  while (stack.length && n < 80) {
+    const obj = stack.pop();
+    n += 1;
+    if (!obj || typeof obj !== "object" || seen.has(obj)) continue;
+    seen.add(obj);
+    if (obj.gridSize === 3 || obj.gridSize === 4) return obj.gridSize;
+    const vals = Array.isArray(obj) ? obj.slice(0, 12) : Object.values(obj).slice(0, 24);
+    for (const v of vals) if (v && typeof v === "object") stack.push(v);
+  }
+  return null;
+}
+
+function readFocusMechanic(response) {
+  if (!response || typeof response !== "object") return false;
+  const stack = [response];
+  const seen = new Set();
+  let n = 0;
+  while (stack.length && n < 80) {
+    const obj = stack.pop();
+    n += 1;
+    if (!obj || typeof obj !== "object" || seen.has(obj)) continue;
+    seen.add(obj);
+    if (obj.focusMechanicEnabled === true) return true;
+    const max = obj.focusMeterMax;
+    if (typeof max === "number" && max > 0) return true;
+    const vals = Array.isArray(obj) ? obj.slice(0, 12) : Object.values(obj).slice(0, 24);
+    for (const v of vals) if (v && typeof v === "object") stack.push(v);
+  }
+  return false;
+}
+
 export function detectFishingBoard(session = null, response = null, requestAction = null) {
   if (typeof requestAction === "string" && /move_focus_point/i.test(requestAction)) return 4;
   if (session?.board === 3 || session?.board === 4) return session.board;
   if (session?.bobberPos || session?.bobberCell != null) return 4;
   if (session?.focusFound || session?.focus != null) return 4;
+
+  const gs = readFishingGridSize(response);
+  if (gs === 3 || gs === 4) return gs;
+  if (readFocusMechanic(response)) return 4;
 
   const body = response?.data ?? response;
   if (body && typeof body === "object") {
@@ -176,61 +216,78 @@ function axisOf(prev, next) {
 }
 
 /**
- * Build fishing community records from a local session (one per movement step).
+ * Build fishing community records from a local session.
+ * A session with currentPos but no movements still emits one snapshot step
+ * (first_position / movement: null). Board 4 without bobber is included (bobber: null).
  */
 export async function fishingRecordsFromSession(session) {
   if (!session) return [];
-  const board = detectFishingBoard(session);
+  const board =
+    session.gridSize === 3 || session.gridSize === 4
+      ? session.gridSize
+      : session.board === 3 || session.board === 4
+        ? session.board
+        : detectFishingBoard(session);
   if (board !== 3 && board !== 4) return [];
 
-  const location = board === 4 ? "dendren" : board === 3 ? "pier" : "unknown";
+  const location = board === 4 ? "dendren" : "pier";
   const movements = Array.isArray(session.movements) ? session.movements : [];
   const out = [];
+  const bobber = session.bobberPos ? { x: session.bobberPos.x, y: session.bobberPos.y } : null;
+  const focus =
+    session.focusFound || session.focus != null
+      ? { cur: session.focus ?? null, max: session.focusMax ?? null }
+      : null;
+  const mana = session.mana != null ? { cur: session.mana, max: session.manaMax ?? null } : null;
+  const catchMeter =
+    session.catchMeter != null ? { cur: session.catchMeter, max: session.catchMax ?? null } : null;
+  const handLength = Array.isArray(session.hand) ? session.hand.length : null;
+  const sessionId = String(session.id ?? `local-${session.startedAt ?? "t"}`);
 
-  for (let i = 0; i < movements.length; i += 1) {
-    const m = movements[i];
-    const fish = m?.to ? { x: m.to.x, y: m.to.y } : null;
-    const prevFish = m?.from ? { x: m.from.x, y: m.from.y } : null;
-    if (!fish) continue;
+  const base = {
+    v: 1,
+    kind: "fishing",
+    board,
+    location,
+    sessionId,
+    bobber,
+    focus,
+    mana,
+    catch: catchMeter,
+    handLength,
+    card: null,
+    mode: mapDetectedMode(session.detectedMode),
+  };
 
-    const draft = {
-      v: 1,
-      kind: "fishing",
-      board,
-      location,
-      sessionId: String(session.id ?? `local-${session.startedAt ?? i}`),
-      step: i + 1,
-      fish,
-      prevFish,
-      distance: m.distance ?? null,
-      axis: axisOf(prevFish, fish),
-      bobber: session.bobberPos ? { x: session.bobberPos.x, y: session.bobberPos.y } : null,
-      focus:
-        session.focusFound || session.focus != null
-          ? { cur: session.focus ?? null, max: session.focusMax ?? null }
-          : null,
-      mana:
-        session.mana != null
-          ? { cur: session.mana, max: session.catchMax != null ? null : null }
-          : null,
-      catch:
-        session.catchMeter != null
-          ? { cur: session.catchMeter, max: session.catchMax ?? null }
-          : null,
-      card: null,
-      mode: mapDetectedMode(session.detectedMode),
-    };
-
-    // Prefer mana max if we stored it separately — leave null if unknown.
-    if (session.mana != null) {
-      draft.mana = { cur: session.mana, max: null };
+  const steps = [];
+  if (movements.length === 0) {
+    if (session.currentPos) {
+      steps.push({
+        step: 0,
+        fish: { x: session.currentPos.x, y: session.currentPos.y },
+        prevFish: null,
+        distance: null,
+        axis: null,
+      });
     }
-
-    if (board === 4 && !draft.bobber) {
-      // Bobber required for board=4 export — skip incomplete steps.
-      continue;
+  } else {
+    for (let i = 0; i < movements.length; i += 1) {
+      const m = movements[i];
+      const fish = m?.to ? { x: m.to.x, y: m.to.y } : null;
+      if (!fish) continue;
+      const prevFish = m?.from ? { x: m.from.x, y: m.from.y } : null;
+      steps.push({
+        step: i + 1,
+        fish,
+        prevFish,
+        distance: m.distance ?? null,
+        axis: axisOf(prevFish, fish),
+      });
     }
+  }
 
+  for (const step of steps) {
+    const draft = { ...base, ...step };
     const id = await fishingCommunityId(draft);
     out.push(sanitizeForCommunity({ ...draft, id }));
   }
@@ -259,7 +316,7 @@ export function validateCommunityRecord(rec) {
   if (rec.kind === "fishing") {
     if (rec.board !== 3 && rec.board !== 4) return { ok: false, reason: "bad_board" };
     if (!rec.fish || typeof rec.fish.x !== "number") return { ok: false, reason: "missing_fish" };
-    if (rec.board === 4 && !rec.bobber) return { ok: false, reason: "bobber_required" };
+    // Bobber is optional on board 4 (Dendren snapshot may lack focusPoint).
     return { ok: true };
   }
   return { ok: false, reason: "bad_kind" };

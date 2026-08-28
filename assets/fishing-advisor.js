@@ -2,27 +2,29 @@
  * Fishing card patterns + bobber/card EV advisor (pure).
  */
 import {
+  DENDREN_SIZE,
   isInBounds,
   legalBobberCells,
   posToCell,
+  sizeForBoard,
 } from "./fishing-grid.js";
 
 /** Apply 3×3 card pattern around bobber onto 4×4 board. Center = miss. */
-export function applyPattern(bobber, card) {
-  if (!bobber || !isInBounds(bobber) || !card) {
+export function applyPattern(bobber, card, size = DENDREN_SIZE) {
+  if (!bobber || !isInBounds(bobber, size) || !card) {
     return { hits: [], crits: [], missCenter: null, clipped: [] };
   }
   const hits = [];
   const crits = [];
   const clipped = [];
-  const missCenter = posToCell(bobber);
+  const missCenter = posToCell(bobber, size);
   const place = (off, bucket) => {
     const p = { x: bobber.x + off.dx, y: bobber.y + off.dy };
-    if (!isInBounds(p)) {
+    if (!isInBounds(p, size)) {
       clipped.push({ ...off });
       return;
     }
-    const cell = posToCell(p);
+    const cell = posToCell(p, size);
     if (cell != null && !bucket.includes(cell)) bucket.push(cell);
   };
   for (const off of card.critOffsets ?? []) place(off, crits);
@@ -47,11 +49,47 @@ export function patternAscii(card) {
   return grid.map((row) => row.join(" ")).join("\n");
 }
 
-export function cellOutcomeOnBoard(card, bobber, fishCell) {
-  const applied = applyPattern(bobber, card);
+export function cellOutcomeOnBoard(card, bobber, fishCell, size = DENDREN_SIZE) {
+  const applied = applyPattern(bobber, card, size);
   if (applied.crits.includes(fishCell)) return { kind: "crit", delta: card.critValue };
   if (applied.hits.includes(fishCell)) return { kind: "hit", delta: card.hitValue };
   return { kind: "miss", delta: -Math.abs(card.missValue) };
+}
+
+/** Pier 3×3: card pattern is absolute on the pond (local 1..9 = pond 1..9). */
+export function scoreCardOnPier(card, predictedCells, ctx = {}) {
+  const cells = Array.isArray(predictedCells) ? predictedCells.filter((c) => c >= 1 && c <= 9) : [];
+  const playable = ctx.mana == null || card.mana <= ctx.mana;
+  if (!playable) {
+    return { ev: null, hitProb: 0, playable: false, escapeRisk: false, worst: 0, covered: 0, coverCells: [] };
+  }
+  if (cells.length === 0) {
+    return { ev: null, hitProb: 0, playable, escapeRisk: false, worst: 0, covered: 0, coverCells: [] };
+  }
+  let sum = 0;
+  let hits = 0;
+  let worst = Infinity;
+  const cover = [];
+  for (const cell of cells) {
+    const out = cellOutcome(card, cell);
+    sum += out.delta;
+    if (out.kind !== "miss") {
+      hits += 1;
+      cover.push(cell);
+    }
+    worst = Math.min(worst, out.delta);
+  }
+  const ev = sum / cells.length;
+  const escapeRisk = ctx.catchMeter != null && ctx.catchMeter + worst <= 0;
+  return {
+    ev,
+    hitProb: hits / cells.length,
+    playable,
+    escapeRisk,
+    worst,
+    covered: hits,
+    coverCells: cover.sort((a, b) => a - b),
+  };
 }
 
 export function scoreCardAtBobber(card, bobber, predictedCells, ctx = {}) {
@@ -89,6 +127,28 @@ export function scoreCardAtBobber(card, bobber, predictedCells, ctx = {}) {
   };
 }
 
+function pickBestCard(candidates, predicted, cards, mana) {
+  const positiveExists = candidates.some((c) => (c.ev ?? -999) >= 0 && !c.escapeRisk);
+  const ranked = candidates
+    .filter((c) => !(c.escapeRisk && positiveExists))
+    .sort((a, b) => {
+      if (a.escapeRisk !== b.escapeRisk) return a.escapeRisk ? 1 : -1;
+      if ((b.ev ?? -999) !== (a.ev ?? -999)) return (b.ev ?? -999) - (a.ev ?? -999);
+      if (b.hitProb !== a.hitProb) return b.hitProb - a.hitProb;
+      if (a.stay !== b.stay) return a.stay ? -1 : 1;
+      return a.card.mana - b.card.mana;
+    });
+  const best = ranked[0] ?? null;
+  const allNegative = ranked.length > 0 && ranked.every((r) => (r.ev ?? 0) < 0);
+  const redrawCost = cards.length;
+  const canRedraw = mana != null && redrawCost > 0 && mana >= redrawCost;
+  let action = "wait";
+  if (best && predicted.length === 0) action = "wait";
+  else if (allNegative && canRedraw) action = "redraw";
+  else if (best) action = "play";
+  return { best, ranked, action, canRedraw, redrawCost, allNegative };
+}
+
 export function chooseFishingAdvice({
   predictedCells,
   bobberPos,
@@ -97,10 +157,54 @@ export function chooseFishingAdvice({
   hand,
   mana,
   catchMeter,
+  board = null,
 } = {}) {
-  const predicted = Array.isArray(predictedCells) ? predictedCells.filter((c) => c >= 1 && c <= 16) : [];
+  const size = sizeForBoard(board === 3 ? 3 : 4);
+  const maxCell = size * size;
+  const predicted = Array.isArray(predictedCells)
+    ? predictedCells.filter((c) => c >= 1 && c <= maxCell)
+    : [];
   const cards = Array.isArray(hand) ? hand.filter(Boolean) : [];
-  const legal = legalBobberCells(bobberPos, focusFound ? focus : null);
+
+  if (board === 3) {
+    const candidates = [];
+    for (const card of cards) {
+      if (mana != null && card.mana > mana) continue;
+      const scored = scoreCardOnPier(card, predicted, { mana, catchMeter });
+      if (!scored.playable || scored.ev == null) continue;
+      candidates.push({ card, stay: true, bobber: null, bobberCell: null, ...scored });
+    }
+    const { best, ranked, action, redrawCost } = pickBestCard(candidates, predicted, cards, mana);
+    let why = "Waiting for fish position or hand";
+    if (action === "redraw") why = `All cards miss likely cells. Redraw costs ${redrawCost} mana.`;
+    else if (best && action === "play") {
+      const parts = [];
+      if (predicted.length) parts.push(`Fish likely ${predicted.join("/")}`);
+      parts.push(`card covers ${best.coverCells.join(", ") || "none"}`);
+      why = `${parts.join(". ")}.`;
+    } else if (cards.length && predicted.length === 0) {
+      why = "Fish position unknown — hand parsed, waiting for fish cell.";
+    }
+    return {
+      action,
+      board: 3,
+      card: best?.card ?? null,
+      bobber: null,
+      bobberCell: null,
+      stay: true,
+      ev: best?.ev ?? null,
+      hitProb: best?.hitProb ?? 0,
+      escapeRisk: Boolean(best?.escapeRisk),
+      ranked: ranked.slice(0, 8),
+      why,
+      focusAssumption: false,
+      focusUnconstrained: false,
+      cardPick: { action, card: best?.card ?? null, ev: best?.ev ?? null, hitProb: best?.hitProb ?? 0, escapeRisk: Boolean(best?.escapeRisk), why },
+      patternAscii: best?.card ? patternAscii(best.card) : null,
+    };
+  }
+
+  const legal = legalBobberCells(bobberPos, focusFound ? focus : null, DENDREN_SIZE);
   const focusAssumption = !focusFound;
 
   const candidates = [];
@@ -159,6 +263,7 @@ export function chooseFishingAdvice({
 
   return {
     action,
+    board: 4,
     card: best?.card ?? null,
     bobber: best?.bobber ?? bobberPos ?? null,
     bobberCell: best?.bobberCell ?? (bobberPos ? posToCell(bobberPos) : null),
@@ -192,6 +297,7 @@ export function formatAdviceLine(advice) {
   if (!advice) return null;
   if (advice.action === "redraw") return `PLAY: Redraw · ${advice.why}`;
   if (advice.action !== "play" || !advice.card) return advice.why;
+  if (advice.board === 3) return `PLAY: ${advice.card.name} · ${advice.card.mana} mana`;
   const bobberTxt =
     advice.stay || !advice.bobberCell
       ? "BOBBER: stay"
@@ -210,6 +316,7 @@ export function recommendCard(cards, possibleCells, ctx = {}) {
     hand: cards,
     mana: ctx.mana,
     catchMeter: ctx.catchMeter,
+    board: ctx.board ?? 4,
   });
   return advice.cardPick;
 }

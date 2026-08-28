@@ -5,11 +5,13 @@ import {
   countTotal,
   enemyStatsKey,
   emptyCounts as combatEmptyCounts,
+  isValidEnemyCid,
   predictEnemyDistribution,
   updateCombatStats,
 } from "../assets/combat-predict.js";
 import { collectAbilityContext } from "../assets/abilities.js";
-import { ingestFishingCapture, ingestFishingHandUi, getFishingStatus, clearFishingData, clearFishingUiState, getAllFishingSessions, upsertCommunityFishing, getCommunityFishing } from "../assets/fishing-collector.js";
+import { ingestFishingCapture, ingestFishingHandUi, getFishingStatus, clearFishingData, clearFishingUiState, getAllFishingSessions, upsertCommunityFishing, getCommunityFishing, exportFishingDebugPayload } from "../assets/fishing-collector.js";
+import { isFishingActionName, looksLikeFishingPayload, isDungeonGameUrl } from "../assets/fishing.js";
 import {
   canPullFromUrl,
   combatRecordFromMove,
@@ -281,7 +283,28 @@ function parseDungeonActionResponse(response, capturedAt, requestAction) {
   const { playerWon, enemyWon } = resolveRpsWinner(playerMove, enemyMove);
   const outcomes = extractOutcomeFlags(events);
   const enemyMaxHp = getMaxHp$1(enemy);
-  const resolvedEnemyCid = enemyCid ?? enemyMaxHp;
+  const resolvedEnemyCid = isValidEnemyCid(enemyCid)
+    ? enemyCid
+    : isValidEnemyCid(enemyMaxHp)
+      ? enemyMaxHp
+      : null;
+  if (!isValidEnemyCid(resolvedEnemyCid)) {
+    return {
+      move: null,
+      diagnostic: {
+        id: buildId(actionToken, dungeonId, roomNumber, timestamp),
+        timestamp,
+        reason: "invalid_enemy_cid",
+        dungeonId,
+        roomNumber,
+        enemyCid: resolvedEnemyCid,
+        actionToken,
+        playerMove,
+        enemyMove
+      },
+      isCombatExchange: true
+    };
+  }
   const move = {
     id: buildId(actionToken, dungeonId, roomNumber, timestamp),
     timestamp,
@@ -289,6 +312,8 @@ function parseDungeonActionResponse(response, capturedAt, requestAction) {
     roomNumber,
     enemyCid: resolvedEnemyCid,
     fightId: makeFightId(dungeonId, roomNumber, resolvedEnemyCid, roomNumber),
+    roomSeq: roomNumber ?? null,
+    fightRound: 1,
     actionToken,
     playerMove,
     enemyMove,
@@ -355,6 +380,20 @@ function isDungeonStateUrl(url) {
   } catch {
     return typeof url === "string" && url.includes("/api/game/dungeon/state");
   }
+}
+function isGamewebuiUrl(url) {
+  try {
+    return /\/api\/gamewebui(\/|$)/i.test(new URL(url, "https://gigaverse.io").pathname);
+  } catch {
+    return typeof url === "string" && /gamewebui/i.test(url);
+  }
+}
+function hasFishingGameDoc(response) {
+  if (!response || typeof response !== "object") return false;
+  const body = response.data ?? response;
+  const doc = body.doc ?? body;
+  const dt = String(doc?.docType ?? body?.docType ?? "").toUpperCase();
+  return dt === "FISHING_GAME";
 }
 function textOf(value) {
   if (typeof value === "string") return value.toLowerCase();
@@ -937,6 +976,8 @@ function predict(store, features) {
     vetoNotes: reply.vetoNotes ?? [],
     burnOnShieldWin: Boolean(reply.burnOnShieldWin || features.burnOnPaperWin),
     saferAlt: reply.saferAlt ?? null,
+    flatEv: Boolean(reply.flatEv),
+    allLethal: Boolean(reply.allLethal),
     updatedAt: (/* @__PURE__ */ new Date()).toISOString()
   };
 }
@@ -1054,26 +1095,26 @@ function computeStats(moves) {
   const dungeonIds = /* @__PURE__ */ new Set();
   const overallCounts = emptyCounts();
   for (const move of sorted) {
+    if (!isValidEnemyCid(move.enemyCid)) continue;
     bump(overallCounts, move.enemyMove);
     if (move.dungeonId != null) dungeonIds.add(move.dungeonId);
-    if (move.enemyCid == null) continue;
     const list = byEnemyMap.get(move.enemyCid) ?? [];
     list.push(move);
     byEnemyMap.set(move.enemyCid, list);
   }
   const byEnemy = [...byEnemyMap.entries()].map(([enemyCid, enemyMoves]) => buildEnemyStats(enemyCid, enemyMoves)).sort((a, b) => b.totalMoves - a.totalMoves || a.enemyCid - b.enemyCid);
   const overall = {
-    totalMoves: sorted.length,
+    totalMoves: sorted.filter((m) => isValidEnemyCid(m.enemyCid)).length,
     uniqueEnemies: byEnemy.length,
     runs: dungeonIds.size,
     rockCount: overallCounts.rock,
     paperCount: overallCounts.paper,
     scissorCount: overallCounts.scissor,
     ...toPercents(overallCounts),
-    transitions: collectTransitions(sorted)
+    transitions: collectTransitions(sorted.filter((m) => isValidEnemyCid(m.enemyCid)))
   };
-  const lastMove = sorted[sorted.length - 1] ?? null;
-  const lastEnemyCid = (lastMove == null ? void 0 : lastMove.enemyCid) ?? null;
+  const lastValid = [...sorted].reverse().find((m) => isValidEnemyCid(m.enemyCid)) ?? null;
+  const lastEnemyCid = (lastValid == null ? void 0 : lastValid.enemyCid) ?? null;
   const lastEnemyStats = lastEnemyCid != null ? byEnemy.find((e) => e.enemyCid === lastEnemyCid) ?? null : null;
   return {
     overall,
@@ -1081,7 +1122,7 @@ function computeStats(moves) {
     lastEnemy: lastEnemyCid == null ? null : {
       enemyCid: lastEnemyCid,
       moves: (lastEnemyStats == null ? void 0 : lastEnemyStats.totalMoves) ?? 0,
-      lastMove: (lastMove == null ? void 0 : lastMove.enemyMove) ?? null
+      lastMove: (lastValid == null ? void 0 : lastValid.enemyMove) ?? null
     }
   };
 }
@@ -1201,6 +1242,9 @@ function txDone(tx) {
   });
 }
 async function addMove(move) {
+  if (!isValidEnemyCid(move?.enemyCid)) {
+    return "skipped_invalid_cid";
+  }
   const db = await openDb();
   try {
     const tx = db.transaction(STORE_MOVES, "readwrite");
@@ -1216,6 +1260,58 @@ async function addMove(move) {
   } finally {
     db.close();
   }
+}
+
+/** Same dungeon + enemy + room → one fight. */
+function sameFightMove(a, b) {
+  if (!a || !b) return false;
+  if (a.dungeonId !== b.dungeonId || a.enemyCid !== b.enemyCid) return false;
+  if (a.roomNumber != null && b.roomNumber != null) return a.roomNumber === b.roomNumber;
+  if (a.fightId && b.fightId) return a.fightId === b.fightId;
+  return a.roomNumber === b.roomNumber;
+}
+
+function annotateFightFields(move, priorInDungeon) {
+  const sorted = [...priorInDungeon].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+  const last = sorted[sorted.length - 1] ?? null;
+  const continued = last != null && sameFightMove(last, move);
+  const roomSeq =
+    move.roomSeq ??
+    move.roomNumber ??
+    (last ? (continued ? last.roomSeq ?? 1 : (last.roomSeq ?? 1) + 1) : 1);
+  const fightId =
+    move.fightId ?? makeFightId(move.dungeonId, move.roomNumber, move.enemyCid, roomSeq);
+  const fightRound = continued ? (last.fightRound ?? 0) + 1 : move.fightRound ?? 1;
+  return {
+    ...move,
+    fightId,
+    roomSeq,
+    fightRound,
+    prevEnemyMove: continued ? last.enemyMove : move.prevEnemyMove ?? null,
+    prevPlayerMove: continued ? last.playerMove : move.prevPlayerMove ?? null,
+  };
+}
+
+/** Local-only advisor log — no tokens/cookies/JWT. */
+function advisorSnapshotFromPrediction(pred) {
+  if (!pred || typeof pred !== "object") return null;
+  return {
+    recommendedMove: pred.recommendedMove ?? null,
+    confidence: pred.confidence ?? null,
+    n: pred.n ?? null,
+    percents: pred.percents
+      ? { rock: pred.percents.rock, paper: pred.percents.paper, scissor: pred.percents.scissor }
+      : null,
+    ranked: Array.isArray(pred.ranked)
+      ? pred.ranked.slice(0, 3).map((r) => ({
+          move: r.move,
+          ev: r.ev,
+          pDeath: r.pDeath,
+          vetoed: Boolean(r.vetoed),
+        }))
+      : [],
+    at: new Date().toISOString(),
+  };
 }
 async function upsertMoves(moves) {
   let saved = 0;
@@ -1541,7 +1637,7 @@ function exportFilename(ext) {
 
 async function broadcastFishing(view, inFishing, debug) {
   try {
-    const tabs = await chrome.tabs.query({ url: ["https://gigaverse.io/play", "https://gigaverse.io/play*"] });
+    const tabs = await chrome.tabs.query({ url: ["https://gigaverse.io/*", "https://*.gigaverse.io/*", "https://builds.gigaverse.io/*"] });
     for (const tab of tabs) {
       if (!tab.id) continue;
       try {
@@ -1560,7 +1656,7 @@ async function broadcastFishing(view, inFishing, debug) {
 
 async function broadcastPrediction(prediction, enabled, inCombat) {
   try {
-    const tabs = await chrome.tabs.query({ url: ["https://gigaverse.io/play", "https://gigaverse.io/play*"] });
+    const tabs = await chrome.tabs.query({ url: ["https://gigaverse.io/*", "https://*.gigaverse.io/*", "https://builds.gigaverse.io/*"] });
     for (const tab of tabs) {
       if (!tab.id) continue;
       try {
@@ -1590,6 +1686,7 @@ async function rebuildModelFromMoves() {
     const sorted = [...list].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
     for (let i = 0; i < sorted.length; i += 1) {
       const move = sorted[i];
+      if (!isValidEnemyCid(move.enemyCid)) continue;
       const prior = sorted.slice(0, i);
       const run = move.dungeonId != null ? await getRunContext(move.dungeonId) : null;
       const features = featuresForUpdate(move, prior, run);
@@ -1667,7 +1764,7 @@ function compactSnapshot(url, method, capturedAt, requestAction, response, kind)
     kind,
     summary: {
       success: body.success ?? null,
-      actionToken: body.actionToken ?? null,
+      actionToken: body.actionToken != null ? "present" : null,
       requestAction: requestAction ?? null,
       dungeonId: run.DUNGEON_ID_CID ?? entity.DUNGEON_ID_CID ?? null,
       roomNumber: entity.ROOM_NUM_CID ?? run.ROOM_NUM_CID ?? null,
@@ -1683,7 +1780,13 @@ async function handleCapture(payload) {
   const meta = await getMeta();
   const isAction = isDungeonActionUrl(payload.url);
   const isState = isDungeonStateUrl(payload.url);
-  debugLog(meta.debug, isState ? "state detected" : "action detected", payload.requestAction ?? "");
+  const fishingGame = hasFishingGameDoc(payload.response);
+  const gamewebui = isGamewebuiUrl(payload.url);
+  const fishingLike =
+    isFishingActionName(payload.requestAction) ||
+    looksLikeFishingPayload(payload.response, payload.requestAction, payload.url) ||
+    (gamewebui && fishingGame);
+  debugLog(meta.debug, isState ? "state detected" : fishingLike ? "fishing detected" : "action detected", payload.requestAction ?? "");
   await addApiSnapshot(
     compactSnapshot(
       payload.url,
@@ -1691,9 +1794,37 @@ async function handleCapture(payload) {
       payload.capturedAt,
       payload.requestAction,
       payload.response,
-      isState ? "state" : isAction ? "action" : "other"
+      fishingLike ? "fishing" : isState ? "state" : isAction ? "action" : "other"
     )
   );
+  // Fishing actions share /api/game/dungeon/action with combat. Never save a combat
+  // move or flip inCombat from leftover run.players on a fishing payload.
+  if (fishingLike) {
+    await setMeta({
+      inCombat: false,
+      combatSnapshot: null,
+      lastPrediction: null,
+      uiUnavailableMoves: [],
+      lastCaptureAt: payload.capturedAt
+    });
+    return { saved: false, inCombat: false, fishingAction: true };
+  }
+  // gamewebui + FISHING_GAME: playerHp is mana — never extractCombatSnapshot as inCombat.
+  if (gamewebui && fishingGame) {
+    await setMeta({
+      inCombat: false,
+      combatSnapshot: null,
+      lastPrediction: null,
+      uiUnavailableMoves: [],
+      lastCaptureAt: payload.capturedAt
+    });
+    return { saved: false, inCombat: false, fishingAction: true };
+  }
+  // Non-dungeon /api/game/* and /api/gamewebui/* must not update combat snapshot.
+  if (!isAction && !isState) {
+    await setMeta({ lastCaptureAt: payload.capturedAt });
+    return { saved: false, inCombat: Boolean(meta.inCombat), fishingAction: false };
+  }
   const snapshot = extractCombatSnapshot(
     payload.response,
     payload.capturedAt,
@@ -1753,14 +1884,29 @@ async function handleCapture(payload) {
       const moves = await getAllMoves();
       const prior = moves.filter((m) => m.dungeonId === parsed.move.dungeonId);
       const lastPrior = prior[prior.length - 1];
-      const move = {
-        ...parsed.move,
-        // Prefer live entity CID from snapshot when parser fell back to maxHp
-        enemyCid: snapshot.enemyCid ?? parsed.move.enemyCid,
-        roomNumber: snapshot.roomNumber ?? parsed.move.roomNumber,
-        prevEnemyMove: (lastPrior == null ? void 0 : lastPrior.enemyMove) ?? null,
-        prevPlayerMove: (lastPrior == null ? void 0 : lastPrior.playerMove) ?? null
-      };
+      const mergedCid = isValidEnemyCid(snapshot.enemyCid)
+        ? snapshot.enemyCid
+        : parsed.move.enemyCid;
+      if (!isValidEnemyCid(mergedCid)) {
+        result = {
+          ...result,
+          saved: false,
+          duplicate: false,
+          diagnostic: "invalid_enemy_cid"
+        };
+      } else {
+      const move = annotateFightFields(
+        {
+          ...parsed.move,
+          // Prefer live entity CID from snapshot when parser fell back to maxHp
+          enemyCid: mergedCid,
+          roomNumber: snapshot.roomNumber ?? parsed.move.roomNumber,
+          prevEnemyMove: (lastPrior == null ? void 0 : lastPrior.enemyMove) ?? null,
+          prevPlayerMove: (lastPrior == null ? void 0 : lastPrior.playerMove) ?? null,
+          advisorSnapshot: advisorSnapshotFromPrediction(meta.lastPrediction),
+        },
+        prior,
+      );
       const addResult = await addMove(move);
       if (addResult === "duplicate") {
         debugLog(meta.debug, "skipped duplicate");
@@ -1777,6 +1923,13 @@ async function handleCapture(payload) {
           lastEnemyCid: move.enemyCid,
           lastEnemyMove: move.enemyMove
         });
+      } else if (addResult === "skipped_invalid_cid") {
+        result = {
+          ...result,
+          saved: false,
+          duplicate: false,
+          diagnostic: "invalid_enemy_cid"
+        };
       } else {
         let store = await getPredictorStore();
         if (meta.lastPrediction && meta.inCombat) {
@@ -1788,7 +1941,7 @@ async function handleCapture(payload) {
         debugLog(meta.debug, "enemyCid:", move.enemyCid);
         debugLog(meta.debug, "playerMove:", move.playerMove);
         debugLog(meta.debug, "enemyMove:", move.enemyMove);
-        debugLog(meta.debug, "actionToken:", move.actionToken);
+        debugLog(meta.debug, "actionToken:", move.actionToken ? "present" : null);
         debugLog(meta.debug, "saved");
         result = {
           ...result,
@@ -1810,6 +1963,7 @@ async function handleCapture(payload) {
         });
         await savePredictorStore(store);
       }
+      }
     }
   }
   const prediction = await refreshPrediction();
@@ -1825,18 +1979,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       switch (message.type) {
         case "ACTION_CAPTURED":
         case "STATE_CAPTURED": {
-          const result = await handleCapture(message.payload);
+          const payload = message.payload;
+          const dungeonUrl = isDungeonGameUrl(payload?.url);
+          const fishingLike =
+            !dungeonUrl &&
+            (isFishingActionName(payload?.requestAction) ||
+              looksLikeFishingPayload(payload?.response, payload?.requestAction, payload?.url) ||
+              (isGamewebuiUrl(payload?.url) && hasFishingGameDoc(payload?.response)));
+          const result = await handleCapture(payload);
           const metaNow = await getMeta();
-          const fishing = await ingestFishingCapture(message.payload, {
-            debug: metaNow.debug,
-            inCombat: Boolean(result.inCombat ?? metaNow.inCombat)
-          });
-          if (result.inCombat) {
+          const fishing = dungeonUrl
+            ? { handled: false, reason: "dungeon_url", inFishing: false, view: null }
+            : await ingestFishingCapture(payload, {
+                debug: metaNow.debug,
+                inCombat: fishingLike ? false : Boolean(result.inCombat ?? metaNow.inCombat)
+              });
+          // Do not hide fishing just because a leftover combat snapshot still exists.
+          if (fishingLike) {
+            await broadcastFishing(fishing.view ?? null, Boolean(fishing.inFishing), metaNow.debug);
+          } else if (result.inCombat) {
             await broadcastFishing(null, false, metaNow.debug);
           } else if (fishing.handled || fishing.reason === "combat_payload" || fishing.reason === "in_combat") {
             await broadcastFishing(fishing.view ?? null, Boolean(fishing.inFishing), metaNow.debug);
           }
-          sendResponse({ ok: true, ...result, fishing });
+          sendResponse({ ok: true, ...result, fishing, inCombat: fishingLike ? false : result.inCombat });
           break;
         }
         case "INTUITION_UI": {
@@ -2199,9 +2365,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse(await getFishingStatus());
           break;
         }
+        case "EXPORT_FISHING": {
+          const payload = await exportFishingDebugPayload();
+          const day = new Date().toISOString().slice(0, 10);
+          sendResponse({
+            ok: true,
+            filename: `giga-fishing-sessions-${day}.json`,
+            json: JSON.stringify(payload, null, 2),
+            count: payload.sessions.length,
+          });
+          break;
+        }
         case "FISHING_HAND_UI": {
           const metaNow = await getMeta();
-          if (metaNow.inCombat) {
+          const fishingUi = Boolean(message.fishingUi);
+          // Stale inCombat must not ignore a live fishing UI.
+          if (fishingUi && metaNow.inCombat) {
+            await setMeta({
+              inCombat: false,
+              combatSnapshot: null,
+              lastPrediction: null,
+              uiUnavailableMoves: []
+            });
+          }
+          if (metaNow.inCombat && !fishingUi) {
             await clearFishingUiState({ reason: "hand_ui_in_combat" });
             await broadcastFishing(null, false, metaNow.debug);
             sendResponse({ ok: true, inFishing: false, ignored: true });
@@ -2209,10 +2396,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           }
           const fishing = await ingestFishingHandUi(message.cards ?? [], {
             debug: metaNow.debug,
-            inCombat: Boolean(metaNow.inCombat),
+            inCombat: fishingUi ? false : Boolean(metaNow.inCombat),
             mana: message.mana ?? null,
             catchMeter: message.catchMeter ?? null,
             revealedCell: message.revealedCell ?? null,
+            fishingUi,
+            board: message.board === 3 || message.board === 4 ? message.board : null,
           });
           await broadcastFishing(fishing.view ?? null, Boolean(fishing.inFishing), metaNow.debug);
           sendResponse({ ok: true, ...fishing });
@@ -2231,3 +2420,74 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   })();
   return true;
 });
+
+function isGigaverseHostUrl(url) {
+  if (typeof url !== "string" || !url) return false;
+  let raw = url;
+  if (raw.startsWith("blob:")) raw = raw.slice(5);
+  try {
+    const host = new URL(raw).hostname.toLowerCase();
+    return host === "gigaverse.io" || host.endsWith(".gigaverse.io");
+  } catch {
+    return /(?:^|[./])gigaverse\.io/i.test(url);
+  }
+}
+
+async function executeScriptGuarded(spec) {
+  try {
+    await chrome.scripting.executeScript({ ...spec, injectImmediately: true });
+    return true;
+  } catch {
+    try {
+      await chrome.scripting.executeScript(spec);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+async function injectPlayTabScripts(tabId) {
+  if (tabId == null || tabId < 0 || !chrome.scripting?.executeScript) return;
+  const filesMain = { files: ["page/interceptor.js"], world: "MAIN" };
+  const filesContent = { files: ["content/index.js"], world: "ISOLATED" };
+  const allTarget = { tabId, allFrames: true };
+  const mainOk = await executeScriptGuarded({ target: allTarget, ...filesMain });
+  const contentOk = await executeScriptGuarded({ target: allTarget, ...filesContent });
+  if (mainOk && contentOk) return;
+  let frames = [];
+  try {
+    frames = (await chrome.webNavigation.getAllFrames({ tabId })) ?? [];
+  } catch {
+    frames = [];
+  }
+  for (const frame of frames) {
+    const target = { tabId, frameIds: [frame.frameId] };
+    await executeScriptGuarded({ target, ...filesMain });
+    await executeScriptGuarded({ target, ...filesContent });
+  }
+}
+
+async function onGigaverseNavigation(details) {
+  if (!details || details.tabId == null) return;
+  let tabUrl = details.url ?? "";
+  try {
+    const tab = await chrome.tabs.get(details.tabId);
+    if (tab?.url) tabUrl = tab.url;
+  } catch {
+    // tab may have closed
+  }
+  if (!isGigaverseHostUrl(tabUrl) && !isGigaverseHostUrl(details.url)) return;
+  void injectPlayTabScripts(details.tabId);
+}
+
+try {
+  if (chrome.webNavigation?.onCommitted) {
+    chrome.webNavigation.onCommitted.addListener(onGigaverseNavigation);
+  }
+  if (chrome.webNavigation?.onDOMContentLoaded) {
+    chrome.webNavigation.onDOMContentLoaded.addListener(onGigaverseNavigation);
+  }
+} catch {
+  // webNavigation unavailable
+}

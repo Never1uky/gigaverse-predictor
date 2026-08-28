@@ -8,6 +8,7 @@ import {
   manhattan,
   parseBoardPosition,
   posToCell,
+  sizeForBoard,
   stepDistance,
 } from "./fishing-grid.js";
 import { chooseFishingAdvice, formatAdviceLine } from "./fishing-advisor.js";
@@ -43,10 +44,10 @@ export function detectMode(distances) {
   return { mode: "UNCERTAIN", confidence: "low", nextDistance: null, nextDistances: [1, 2], label: "Pattern uncertain · showing 1+2" };
 }
 
-function predictedFromState(currentPos, detected, revealedCell) {
+function predictedFromState(currentPos, detected, revealedCell, size) {
   const possible = [];
   if (revealedCell != null) {
-    const parsed = parseBoardPosition(revealedCell);
+    const parsed = parseBoardPosition(revealedCell, size);
     if (parsed.pos) possible.push({ pos: parsed.pos, cell: parsed.cell });
     return possible;
   }
@@ -58,8 +59,8 @@ function predictedFromState(currentPos, detected, revealedCell) {
       : [1, 2];
   const seen = new Set();
   for (const d of distances) {
-    for (const p of getReachableCells(currentPos, d)) {
-      const cell = posToCell(p);
+    for (const p of getReachableCells(currentPos, d, size)) {
+      const cell = posToCell(p, size);
       if (cell != null && !seen.has(cell)) {
         seen.add(cell);
         possible.push({ pos: p, cell });
@@ -70,9 +71,10 @@ function predictedFromState(currentPos, detected, revealedCell) {
 }
 
 export function predictFishing(input = {}) {
-  const { currentPos, distances, hand, mana, catchMeter, revealedCell, bobberPos, focus, focusFound } = input;
+  const { currentPos, distances, hand, mana, catchMeter, revealedCell, bobberPos, focus, focusFound, board } = input;
+  const size = sizeForBoard(board);
   const detected = detectMode(distances ?? []);
-  const possible = predictedFromState(currentPos, detected, revealedCell);
+  const possible = predictedFromState(currentPos, detected, revealedCell, size);
   const possibleCells = possible.map((p) => p.cell);
   const advice = chooseFishingAdvice({
     predictedCells: possibleCells,
@@ -82,13 +84,14 @@ export function predictFishing(input = {}) {
     hand: hand ?? [],
     mana,
     catchMeter,
+    board: board ?? null,
   });
   return {
     ...detected,
-    currentCell: currentPos ? posToCell(currentPos) : null,
+    currentCell: currentPos ? posToCell(currentPos, size) : null,
     currentPos: currentPos ?? null,
     bobberPos: bobberPos ?? null,
-    bobberCell: bobberPos ? posToCell(bobberPos) : null,
+    bobberCell: bobberPos ? posToCell(bobberPos, 4) : null,
     history: (distances ?? []).slice(),
     possibleCells,
     possiblePositions: possible,
@@ -99,6 +102,7 @@ export function predictFishing(input = {}) {
     recommendedBobber: advice.bobber,
     recommendation: formatAdviceLine(advice),
     focusAssumption: advice.focusAssumption,
+    board: board ?? advice.board ?? null,
   };
 }
 
@@ -112,7 +116,8 @@ export function makeSessionId({ fishId, sessionHint, startedAt }) {
 }
 
 export function applyFishPosition(session, nextPos, meta = {}) {
-  const cell = posToCell(nextPos);
+  const size = sizeForBoard(session.board);
+  const cell = posToCell(nextPos, size);
   if (cell == null) return { session, accepted: false, reason: "unknown_position" };
   const token = meta.actionToken != null ? String(meta.actionToken) : null;
   if (token && session.seenTokens.includes(token)) return { session, accepted: false, reason: "duplicate" };
@@ -136,7 +141,7 @@ export function applyFishPosition(session, nextPos, meta = {}) {
     };
     return { session: next, accepted: true, reason: "first_position", movement: null };
   }
-  const dist = stepDistance(session.currentPos, nextPos);
+  const dist = stepDistance(session.currentPos, nextPos, size);
   if (dist == null) {
     const d = manhattan(session.currentPos, nextPos);
     if (d === 0) return { session, accepted: false, reason: "same_cell" };
@@ -167,11 +172,12 @@ export function applyFishPosition(session, nextPos, meta = {}) {
 }
 
 export function applyBobberPosition(session, bobberPos, meta = {}) {
-  if (!bobberPos || !isInBounds(bobberPos)) return { session, accepted: false, reason: "unknown_bobber" };
+  if (!bobberPos || !isInBounds(bobberPos, 4)) return { session, accepted: false, reason: "unknown_bobber" };
   const next = {
     ...session,
+    board: 4,
     bobberPos: { x: bobberPos.x, y: bobberPos.y },
-    bobberCell: posToCell(bobberPos),
+    bobberCell: posToCell(bobberPos, 4),
     lastAction: meta.requestAction ?? session.lastAction ?? null,
   };
   if (meta.focus != null) next.focus = meta.focus;
@@ -205,10 +211,11 @@ export function emptySession(partial = {}) {
     focusFound: false,
     hand: [],
     mana: null,
+    manaMax: null,
     catchMeter: null,
     catchMax: null,
     revealedCell: null,
-    lastAction: null,
+    lastAction: partial.lastAction ?? null,
     endedAt: null,
   };
 }
@@ -229,10 +236,14 @@ export function shouldOpenNewSession(session, ids, nowIso) {
   return false;
 }
 
-export function sessionShouldEnd({ mana, catchMeter, catchMax }) {
+export function sessionShouldEnd({ mana, catchMeter, catchMax, ids } = {}) {
+  // Do not end on catchMeter<=0 (Dendren often starts at 0) or catchMeter>=catchMax
+  // (live 4x4 dumps can have fishHp == fishMaxHp while FISH_ESCAPED / SUCCESS_CID is still false).
+  // End only on explicit ids.ended (COMPLETE_CID === true, FISH_ESCAPED, FISH_CAUGHT) or mana<=0.
+  void catchMeter;
+  void catchMax;
+  if (ids && ids.ended) return "ids_ended";
   if (mana != null && mana <= 0) return "mana_empty";
-  if (catchMeter != null && catchMeter <= 0) return "catch_empty";
-  if (catchMeter != null && catchMax != null && catchMeter >= catchMax) return "catch_full";
   return null;
 }
 
@@ -267,7 +278,7 @@ export function summarizeFishingStats(sessions, extras = {}) {
   };
 }
 
-export function renderAsciiGrid(currentCell, possibleCells = [], bobberCell = null) {
+export function renderAsciiGrid(currentCell, possibleCells = [], bobberCell = null, size = 4) {
   const possible = new Set(possibleCells);
   const glyph = (n) => {
     if (n === currentCell) return "F";
@@ -276,9 +287,9 @@ export function renderAsciiGrid(currentCell, possibleCells = [], bobberCell = nu
     return "·";
   };
   const rows = [];
-  for (let y = 0; y < 4; y += 1) {
+  for (let y = 0; y < size; y += 1) {
     const cells = [];
-    for (let x = 0; x < 4; x += 1) cells.push(glyph(posToCell({ x, y })));
+    for (let x = 0; x < size; x += 1) cells.push(glyph(posToCell({ x, y }, size)));
     rows.push(cells.join(" "));
   }
   return rows.join("\n");

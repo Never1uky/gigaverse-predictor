@@ -1,10 +1,10 @@
 {
   "manifest_version": 3,
   "name": "Gigaverse Predictor",
-  "version": "1.5.2",
+  "version": "0.1.0",
   "description": "Passive combat + fishing advisor for Gigaverse. Local + optional community import; never posts actions or uploads logs.",
-  "permissions": ["storage", "unlimitedStorage", "activeTab", "tabs"],
-  "host_permissions": ["https://gigaverse.io/*"],
+  "permissions": ["storage", "unlimitedStorage", "activeTab", "tabs", "scripting", "webNavigation"],
+  "host_permissions": ["https://gigaverse.io/*", "https://*.gigaverse.io/*"],
   "background": {
     "service_worker": "background/index.js",
     "type": "module"
@@ -15,15 +15,29 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://gigaverse.io/play", "https://gigaverse.io/play*", "https://gigaverse.io/play/*"],
+      "matches": [
+        "https://gigaverse.io/play",
+        "https://gigaverse.io/play*",
+        "https://gigaverse.io/play/*",
+        "https://*.gigaverse.io/*",
+        "https://builds.gigaverse.io/*"
+      ],
       "js": ["page/interceptor.js"],
       "run_at": "document_start",
-      "world": "MAIN"
+      "world": "MAIN",
+      "all_frames": true
     },
     {
-      "matches": ["https://gigaverse.io/play", "https://gigaverse.io/play*", "https://gigaverse.io/play/*"],
+      "matches": [
+        "https://gigaverse.io/play",
+        "https://gigaverse.io/play*",
+        "https://gigaverse.io/play/*",
+        "https://*.gigaverse.io/*",
+        "https://builds.gigaverse.io/*"
+      ],
       "js": ["content/index.js"],
-      "run_at": "document_start"
+      "run_at": "document_start",
+      "all_frames": true
     }
   ]
 }

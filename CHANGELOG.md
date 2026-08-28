@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.1.0 — first public beta
+- First release intended for public testing outside the Chrome Web Store.
+- Passive combat/fishing advisor, local history, sanitized community import/export, and bounded continuation EV.
+- Security and permission explanations plus checksum-based ZIP verification are documented in the root README. See `CHANGELOG-0.1.0.md`.
+
+## 1.6.3
+- Combat EV: default lookahead depth=2 (γ=0.65) for continuation / HP after; phase2 predict unchanged. Capture `fightRound`/`roomSeq`/`advisorSnapshot`. See `CHANGELOG-1.6.3.md` and `scripts/backtest/EV-CONTINUATION.md`.
+
+## 1.6.2
+- Interceptor: rethrow native fetch network failures; clone Request for action peek only; optional `__GDC_DEBUG__` fetch-fail logs. See `CHANGELOG-1.6.2.md`.
+
+## 1.6.1
+- Compact popup: user Combat/Fishing/Stats; diagnostics under collapsed Developer panel. See `CHANGELOG-1.6.1.md`.
+- Audit report only (no model/EV change): `scripts/backtest/COMBAT-PREDICTOR-1500-AUDIT.md`.
+
+## 1.6.0
+- Combat EV: replace `DEATH=1e6` score with bounded survival utility U∈[−1,1] (square HP, Balanced 55/35/10). Overlay EV `toFixed(2)` with sign.
+- Prediction / veto / hard constraints / fishing unchanged. See `CHANGELOG-1.6.0.md` and `scripts/backtest/EV-REWORK.md`.
+
+## 1.5.3
+- Fishing overlay no longer wiped by combat `render()` outside combat.
+- Advisor for **pier 3×3** (card pattern = pond, no bobber) and **Dendren 4×4** (card relative to bobber).
+- Hub watcher ignores fishing Redraw UI. Session can start from parsed hand + fishing UI.
+
 ## 1.5.2
 - Combat Phase 2: pool enemy history by `enemyCid` (not run `dungeonId`).
 - Hierarchical backoff (Markov → enemy → global), Dirichlet α=2, minN=3.

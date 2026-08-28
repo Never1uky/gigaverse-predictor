@@ -11,9 +11,20 @@ export const COMBAT_CALIBRATION_N = 20;
 
 const UNIFORM = { rock: 1 / 3, paper: 1 / 3, scissor: 1 / 3 };
 
+/** Kill/transition often sends ENEMY_CID 0 — never pool or display that. */
+export function isValidEnemyCid(enemyCid) {
+  const n =
+    typeof enemyCid === "number"
+      ? enemyCid
+      : typeof enemyCid === "string" && enemyCid.trim() !== ""
+        ? Number(enemyCid)
+        : NaN;
+  return Number.isFinite(n) && n > 0;
+}
+
 export function enemyStatsKey(enemyCid) {
-  if (enemyCid == null) return "e:unknown";
-  return `e:${enemyCid}`;
+  if (!isValidEnemyCid(enemyCid)) return "e:unknown";
+  return `e:${Number(enemyCid)}`;
 }
 
 export function emptyCounts() {
@@ -163,6 +174,7 @@ function bumpCounts(counts, move) {
 /** Update global + enemyCid-pooled counts (markov on prev enemy only). */
 export function updateCombatStats(store, features, observedMove) {
   if (!MOVE_ORDER.includes(observedMove)) return store;
+  if (!isValidEnemyCid(features?.enemyCid)) return store;
 
   if (!store.global) store.global = emptyCounts();
   bumpCounts(store.global, observedMove);

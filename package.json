@@ -1,0 +1,12 @@
+{
+  "name": "gigaverse-predictor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/predictor.test.js test/fishing.test.js test/community.test.js test/combat-predict.test.js test/fishing-detect.test.mjs test/import-parse.test.js test/interceptor-idempotent.test.js",
+    "test:fishing": "node --test test/fishing.test.js test/fishing-detect.test.mjs",
+    "test:predictor": "node --test test/predictor.test.js",
+    "test:community": "node --test test/community.test.js"
+  }
+}
