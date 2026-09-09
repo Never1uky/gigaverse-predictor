@@ -49,10 +49,10 @@ Community import/export is user initiated. **Export community** is the thin shar
 
 ## Share move history
 
-The public repository dataset currently contains **2,169 sanitized exchanges** from **145 runs**, covering **502 fights** and **13 enemy IDs**:
+The public repository dataset currently contains **3,460 sanitized combat exchanges** from **256 runs**, covering **917 fights** and **14 enemy IDs** (plus **32** fishing steps):
 
 - [`data/community/combat.jsonl`](data/community/combat.jsonl)
-- [`data/community/fishing.jsonl`](data/community/fishing.jsonl) (empty until fishing submissions arrive)
+- [`data/community/fishing.jsonl`](data/community/fishing.jsonl)
 
 The ZIP includes this dataset for **Load bundled dataset**. It can also be downloaded separately and loaded through **Community → Import**.
 
