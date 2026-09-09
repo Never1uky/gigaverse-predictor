@@ -24,6 +24,11 @@ import {
   toJsonl,
   validateCommunityRecord,
 } from "../assets/community.js";
+import {
+  buildEvResearchRecords,
+  evResearchExportContainsSecrets,
+  toEvResearchJsonl,
+} from "../assets/ev-export.js";
 function asNumber$1(value) {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))) {
@@ -970,9 +975,11 @@ function predict(store, features) {
     ruledOutMove: features.ruledOutMove,
     unavailable,
     pDeath: reply.pDeath,
+    survivalChance: reply.survivalChance ?? null,
     expectedHpAfter: reply.expectedHpAfter,
     expectedShieldAfter: reply.expectedShieldAfter,
     hpKnown: reply.hpKnown,
+    reasons: Array.isArray(reply.reasons) ? reply.reasons : [],
     vetoNotes: reply.vetoNotes ?? [],
     burnOnShieldWin: Boolean(reply.burnOnShieldWin || features.burnOnPaperWin),
     saferAlt: reply.saferAlt ?? null,
@@ -1266,8 +1273,15 @@ function advisorSnapshotFromPrediction(pred) {
           move: r.move,
           ev: r.ev,
           pDeath: r.pDeath,
+          survivalChance: r.survivalChance ?? null,
           vetoed: Boolean(r.vetoed),
+          reasons: Array.isArray(r.reasons)
+            ? r.reasons.slice(0, 3).map((x) => ({ code: x.code, text: x.text }))
+            : []
         }))
+      : [],
+    reasons: Array.isArray(pred.reasons)
+      ? pred.reasons.slice(0, 5).map((x) => ({ code: x.code, text: x.text }))
       : [],
     at: new Date().toISOString(),
   };
@@ -2128,6 +2142,36 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             count: records.length,
             combat: records.filter((r) => r.kind === "combat").length,
             fishing: records.filter((r) => r.kind === "fishing").length,
+          });
+          break;
+        }
+        case "EXPORT_EV_RESEARCH": {
+          if (!message.confirmed) {
+            sendResponse({ ok: false, error: "confirm_required" });
+            break;
+          }
+          const moves = await getAllMoves();
+          const runs = await getAllRunContexts();
+          const runsByDungeonId = {};
+          for (const run of runs ?? []) {
+            const key = run?.runId ?? run?.dungeonId;
+            if (key != null) runsByDungeonId[String(key)] = run;
+          }
+          const built = await buildEvResearchRecords(moves, runsByDungeonId);
+          const jsonl = toEvResearchJsonl(built.records);
+          if (evResearchExportContainsSecrets(jsonl)) {
+            sendResponse({ ok: false, error: "secrets_detected" });
+            break;
+          }
+          const day = new Date().toISOString().slice(0, 10);
+          sendResponse({
+            ok: true,
+            filename: `giga-ev-${day}.jsonl`,
+            jsonl,
+            count: built.records.length,
+            scoreable: built.scoreable,
+            skipped: built.skipped,
+            totalMoves: built.totalMoves,
           });
           break;
         }

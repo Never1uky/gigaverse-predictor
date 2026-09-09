@@ -73,6 +73,14 @@ function escapeHtml(text) {
     .replace(/>/g, "&gt;");
 }
 
+function survivalBarText(chance, segments = 10) {
+  if (chance == null || !Number.isFinite(chance)) return { bar: "··········", pct: "—" };
+  const pct = Math.max(0, Math.min(100, Math.round(chance * 100)));
+  const filled = Math.round((pct / 100) * segments);
+  const bar = "█".repeat(filled) + "░".repeat(segments - filled);
+  return { bar, pct: `${pct}%` };
+}
+
 function render() {
   if (!enabled || !inCombat) {
     if (panel) panel.style.display = "none";
@@ -83,44 +91,72 @@ function render() {
   hideFishingOverlay();
   const el = ensurePanel();
   el.style.display = "block";
+  el.style.whiteSpace = "normal";
   if (!lastPrediction) {
-    el.innerHTML = `<div style="opacity:.75">GDC Predictor</div><div>learning…</div>`;
+    el.innerHTML = `<div style="opacity:.75">⚔ Combat</div><div style="opacity:.7;margin-top:4px">learning…</div>`;
     return;
   }
   const p = lastPrediction;
   const unavailable = p.unavailable ?? [];
   const rankedByMove = Object.fromEntries((p.ranked ?? []).map((row) => [row.move, row]));
-  const rows = ORDER.map((m) => {
-    const pct = p.percents[m];
+  const playMove = p.recommendedMove ?? null;
+  const play = playMove ? LABELS[playMove] : "—";
+  const enemy = p.enemyCid != null && p.enemyCid > 0 ? `#${p.enemyCid}` : "—";
+
+  const probRows = ORDER.map((m) => {
+    const pct = p.percents?.[m] ?? 0;
+    const ruled = p.ruledOutMove === m || unavailable.includes(m);
+    const isPlay = playMove === m;
+    const color = isPlay ? "#9fe6b8" : ruled ? "rgba(244,241,234,.45)" : "inherit";
+    const weight = isPlay ? "700" : "500";
+    const mark = ruled ? (p.ruledOutMove === m ? " · ruled out" : " · 0 charges") : "";
+    return `<div style="display:flex;justify-content:space-between;gap:12px;color:${color};font-weight:${weight}"><span>${LABELS[m]}</span><span>${pct}%${mark}</span></div>`;
+  }).join("");
+
+  const evRows = ORDER.map((m) => {
     const row = rankedByMove[m];
     const ev =
       row?.ev != null && Number.isFinite(row.ev)
         ? `${row.ev >= 0 ? "+" : ""}${row.ev.toFixed(2)}`
         : "—";
-    const death =
-      p.hpKnown && row?.pDeath != null
-        ? `${Math.round(row.pDeath * 100)}%`
-        : "—";
-    const ruled = p.ruledOutMove === m || unavailable.includes(m);
-    const mark = ruled ? p.ruledOutMove === m ? " · ruled out" : " · 0 charges" : "";
-    const weight = p.topMove === m ? "font-weight:700;color:#9fe6b8" : "font-weight:500";
-    return `<div style="${weight}">${LABELS[m]}  ${pct}% · EV ${ev} · D ${death}${mark}</div>`;
+    const isPlay = playMove === m;
+    const color = isPlay ? "#9fe6b8" : "inherit";
+    const weight = isPlay ? "700" : "500";
+    return `<div style="display:flex;justify-content:space-between;gap:12px;color:${color};font-weight:${weight}"><span>${LABELS[m]}</span><span>${ev}</span></div>`;
   }).join("");
-  // Play must be EV recommendedMove — never topMove of the enemy.
-  const playMove = p.recommendedMove ?? null;
-  const play = playMove ? LABELS[playMove] : "—";
-  const enemy = p.enemyCid != null && p.enemyCid > 0 ? `#${p.enemyCid}` : "—";
-  const whyLines = buildCombatWhyLines(p);
+
+  const survChance =
+    p.hpKnown && p.survivalChance != null && Number.isFinite(p.survivalChance)
+      ? p.survivalChance
+      : p.hpKnown && p.pDeath != null && Number.isFinite(p.pDeath)
+        ? 1 - p.pDeath
+        : null;
+  const surv = survivalBarText(survChance);
+  const conf = String(p.confidence ?? "—").toUpperCase();
+  const whyLines = buildCombatWhyLines(p).slice(0, 2);
   const whyHtml = whyLines
     .map((line) => {
-      const warn = line.includes("⚠") || /you die|умираешь|Not |lethal/i.test(line);
-      return `<div style="margin-top:3px;opacity:.85;${warn ? "color:#f0c36d;font-weight:600" : ""}">${escapeHtml(line)}</div>`;
+      const warn = line.includes("⚠") || /you die|Not |lethal/i.test(line);
+      return `<div style="margin-top:3px;opacity:.8;font-size:11px;${warn ? "color:#f0c36d;font-weight:600" : ""}">${escapeHtml(line)}</div>`;
     })
     .join("");
+
   el.innerHTML = `
-    <div style="opacity:.8;margin-bottom:4px">Enemy ${enemy} · N=${p.n} · ${p.confidence}</div>
-    ${rows}
-    <div style="margin-top:8px;font-size:14px;font-weight:700;color:#9fe6b8">Play: ${play}</div>
+    <div style="opacity:.85;font-size:11px;letter-spacing:.06em;text-transform:uppercase;font-weight:700;margin-bottom:6px">⚔ Combat</div>
+    <div style="display:flex;justify-content:space-between;gap:10px;margin-bottom:8px">
+      <span style="font-weight:650">Enemy ${enemy}</span>
+      <span style="opacity:.75">N = ${p.n ?? 0}</span>
+    </div>
+    <div style="font-family:ui-monospace,Consolas,monospace;font-size:12px;line-height:1.45">${probRows}</div>
+    <div style="margin-top:8px;opacity:.65;font-size:10px;letter-spacing:.06em;text-transform:uppercase;font-weight:700">EV</div>
+    <div style="font-family:ui-monospace,Consolas,monospace;font-size:12px;line-height:1.45;margin-top:3px">${evRows}</div>
+    <div style="margin-top:10px;padding:7px 9px;border-radius:8px;background:rgba(159,230,184,.12);border:1px solid rgba(159,230,184,.28);color:#9fe6b8;font-weight:750;font-size:13px">▶ PLAY ${escapeHtml(play)}</div>
+    <div style="margin-top:8px;display:flex;align-items:center;gap:8px;font-size:11px">
+      <span style="opacity:.7;text-transform:uppercase;letter-spacing:.04em;font-weight:650">Survival</span>
+      <span style="font-family:ui-monospace,Consolas,monospace;letter-spacing:1px;color:#9fe6b8">${surv.bar}</span>
+      <span style="opacity:.7;margin-left:auto">${surv.pct}</span>
+    </div>
+    <div style="margin-top:6px;font-size:10px;letter-spacing:.05em;text-transform:uppercase;font-weight:700;opacity:.8">Confidence ${escapeHtml(conf)}</div>
     ${whyHtml}
   `;
 }
@@ -131,6 +167,12 @@ function buildCombatWhyLines(p) {
   const counter = p.counterMove;
   const rec = p.recommendedMove;
   const topPct = top != null ? p.percents?.[top] : null;
+
+  if (Array.isArray(p.reasons)) {
+    for (const r of p.reasons) {
+      if (r?.text) lines.push(r.text.charAt(0).toUpperCase() + r.text.slice(1));
+    }
+  }
 
   if (p.flatEv && counter) {
     lines.push(`EV≈flat, counter = ${LABELS[counter]}`);
@@ -144,9 +186,13 @@ function buildCombatWhyLines(p) {
     lines.push("all replies lethal — pick lowest death");
   } else if (p.hpKnown && (p.pDeath != null || p.expectedHpAfter != null)) {
     const deathPct = Math.round((p.pDeath ?? 0) * 100);
+    const survPct =
+      p.survivalChance != null && Number.isFinite(p.survivalChance)
+        ? Math.round(p.survivalChance * 100)
+        : Math.round((1 - (p.pDeath ?? 0)) * 100);
     const hp = p.expectedHpAfter == null ? "?" : Math.round(p.expectedHpAfter);
     const sh = p.expectedShieldAfter == null ? "?" : Math.round(p.expectedShieldAfter);
-    lines.push(`Death ${deathPct}% · HP ~${hp} · Shield ~${sh}`);
+    lines.push(`Survival ${survPct}% · Death ${deathPct}% · HP ~${hp} · Shield ~${sh}`);
   }
   if (p.locked && p.topMove) lines.push(`Enemy must play ${LABELS[p.topMove]}`);
   for (const note of p.vetoNotes ?? []) {
@@ -166,15 +212,15 @@ function buildCombatWhyLines(p) {
 
   for (const line of fromWhy) {
     if (!lines.some((existing) => existing.toLowerCase() === line.toLowerCase())) {
-      if (/because it beats|counter would be|Death \d|Enemy must|burns you|Safer:|you die|Not |EV≈flat|lethal/i.test(line) &&
-          lines.some((e) => e.includes(line.slice(0, 12)))) {
+      if (/because it beats|counter would be|Death \d|Survival \d|Enemy must|burns you|Safer:|you die|Not |EV≈flat|lethal|survival advantage|kill opportunity|low HP|resource preservation|damage advantage|high death/i.test(line) &&
+          lines.some((e) => e.toLowerCase().includes(line.toLowerCase().slice(0, 12)))) {
         continue;
       }
       lines.push(line);
     }
   }
 
-  return lines.slice(0, 4);
+  return lines.slice(0, 5);
 }
 
 function uiMoveNames(text) {

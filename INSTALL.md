@@ -1,29 +1,27 @@
-# Установка Gigaverse Predictor 1.5.2
+# Install Gigaverse Predictor 0.1.2 Beta
 
-Способ: Chrome → Load unpacked → папка с `manifest.json`.
+Preferred path: GitHub Release ZIP → verify SHA-256 → Load unpacked.
 
-## Из zip
+## From the GitHub release
 
-1. Скачай `dist/gigaverse-predictor-v1.5.2.zip`
-2. Распакуй, например в `C:\Users\<ты>\gigaverse-predictor`
-3. `chrome://extensions` → Developer mode → Load unpacked → эта папка
-4. Открой https://gigaverse.io/play и обнови страницу
+1. Download `gigaverse-predictor-v0.1.2.zip` and `gigaverse-predictor-v0.1.2.zip.sha256`
+2. Verify:
 
-## Из репозитория
+   ```powershell
+   (Get-FileHash .\gigaverse-predictor-v0.1.2.zip -Algorithm SHA256).Hash.ToLower()
+   ```
 
-1. Code → Download ZIP (корень архива — приватные исходники расширения)
-2. Распакуй. `manifest.json` должен быть в корне выбранной папки
-3. Load unpacked туда же
+   Expected: `402478765be585e895cf1486ea37885447bf63c1df986e7c1101f9d994637006`
+3. Extract to a permanent folder
+4. `chrome://extensions` → Developer mode → Load unpacked → that folder
+5. Open https://gigaverse.io/play and refresh
 
-## После установки
+VirusTotal: https://www.virustotal.com/gui/file/402478765be585e895cf1486ea37885447bf63c1df986e7c1101f9d994637006?nocache=1
 
-1. Popup → если в сборке уже есть корпус, **Load bundled dataset**
-2. Играй. Логи ходов копятся локально
-3. Чтобы помочь общей базе: **Export community** → файл на диск → пришли владельцу репо
-4. **Export Full не отправляй никому**
+## After install
 
-## Если overlay не виден
-
-- Страница должна быть `gigaverse.io/play`
-- Расширение включено, после установки страницу перезагружают
-- В бою виден combat overlay, в рыбалке — fishing, не оба сразу
+1. Popup → optional **Community → Bundled**
+2. Play normally; advice stays local
+3. To share prediction history: **Community → Export** only
+4. For local EV audits: **Research → Export EV research** (do not post publicly unless intentional)
+5. Never share seed phrases, JWT, cookies, or action tokens

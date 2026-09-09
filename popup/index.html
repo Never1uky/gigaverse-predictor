@@ -14,14 +14,32 @@
         <p id="status" class="status">○ Checking…</p>
       </header>
 
-      <section class="block" id="combat-block">
-        <h2>Combat</h2>
-        <p id="combat-meta" class="muted">No combat prediction yet.</p>
-        <pre id="combat-probs" class="compact-pre muted"></pre>
-        <pre id="combat-ev" class="compact-pre muted"></pre>
-        <p id="combat-play" class="play-line muted"></p>
-        <p id="combat-reason" class="muted small"></p>
-        <p id="combat-confidence" class="muted small"></p>
+      <section class="block combat-block" id="combat-block">
+        <h2 class="combat-title">⚔ Combat</h2>
+        <div id="combat-empty" class="muted">No combat prediction yet.</div>
+        <div id="combat-live" class="combat-live" hidden>
+          <div class="combat-meta-row">
+            <span id="combat-enemy" class="combat-enemy">Enemy —</span>
+            <span id="combat-n" class="combat-n">N = 0</span>
+          </div>
+          <div class="combat-table" id="combat-probs-table" aria-label="Enemy move probabilities"></div>
+          <div class="combat-ev-label">EV</div>
+          <div class="combat-table combat-ev-table" id="combat-ev-table" aria-label="Expected utility"></div>
+          <div id="combat-play" class="combat-play">▶ PLAY —</div>
+          <div class="combat-survival-row">
+            <span class="combat-survival-label">Survival</span>
+            <div id="combat-survival-bar" class="survival-bar" aria-hidden="true"></div>
+            <span id="combat-survival-pct" class="combat-survival-pct"></span>
+          </div>
+          <div class="combat-footer-row">
+            <span id="combat-confidence" class="confidence-pill">Confidence —</span>
+          </div>
+          <p id="combat-reason" class="combat-reason muted small"></p>
+        </div>
+        <!-- legacy targets kept for older refresh paths -->
+        <p id="combat-meta" hidden></p>
+        <pre id="combat-probs" hidden></pre>
+        <pre id="combat-ev" hidden></pre>
         <div class="actions pred-actions">
           <button type="button" id="btn-prediction">Prediction ON</button>
           <button type="button" id="btn-reset-model">Reset Model</button>
@@ -60,6 +78,14 @@
         </div>
         <p id="community-pull-hint" class="muted small">Pull disabled — Import file instead.</p>
         <input type="file" id="community-import-file" accept="application/json,.json,.jsonl,text/plain" multiple hidden />
+      </section>
+
+      <section class="block" id="research-block">
+        <h2>Research</h2>
+        <p class="muted small">Local EV audit file (ATK/DEF/shield). No login, JWT, cookies, or actionToken.</p>
+        <div class="actions community-actions">
+          <button type="button" id="btn-ev-export">Export EV research</button>
+        </div>
       </section>
 
       <details class="block debug-panel" id="debug-panel">

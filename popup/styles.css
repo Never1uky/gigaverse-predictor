@@ -84,6 +84,180 @@ h2 {
   font-size: 14px;
 }
 
+.combat-title {
+  letter-spacing: 0.06em;
+}
+
+.combat-live {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.combat-meta-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.combat-enemy {
+  font-weight: 650;
+}
+
+.combat-n {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
+
+.combat-table {
+  display: grid;
+  gap: 3px;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.combat-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: baseline;
+}
+
+.combat-row.is-play .combat-row-label,
+.combat-row.is-play .combat-row-value {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.combat-row-value {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  min-width: 3.2em;
+}
+
+.combat-ev-label {
+  margin-top: 2px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  font-weight: 650;
+}
+
+.combat-play {
+  margin-top: 2px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: #e7f3ea;
+  border: 1px solid #b9d8c2;
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+}
+
+.combat-play.is-empty {
+  background: transparent;
+  border-color: var(--line);
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.combat-survival-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+}
+
+.combat-survival-label {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 650;
+}
+
+.survival-bar {
+  display: flex;
+  gap: 2px;
+  height: 10px;
+  align-items: center;
+}
+
+.survival-seg {
+  flex: 1;
+  height: 8px;
+  border-radius: 2px;
+  background: #e2dbcf;
+}
+
+.survival-seg.on {
+  background: var(--accent);
+}
+
+.survival-seg.mid {
+  background: #c4a35a;
+}
+
+.survival-seg.low {
+  background: var(--danger);
+}
+
+.combat-survival-pct {
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  color: var(--muted);
+  min-width: 2.6em;
+  text-align: right;
+}
+
+.combat-footer-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.confidence-pill {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 3px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--muted);
+}
+
+.confidence-pill.high {
+  border-color: #b9d8c2;
+  background: #e7f3ea;
+  color: var(--accent);
+}
+
+.confidence-pill.medium {
+  border-color: #e0d0a0;
+  background: #f7f0dc;
+  color: #7a5d18;
+}
+
+.confidence-pill.low {
+  border-color: #e0c8c8;
+  background: #f7ecec;
+  color: var(--danger);
+}
+
+.combat-reason {
+  margin: 0;
+}
+
 .compact-pre {
   margin: 4px 0 0;
   font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;

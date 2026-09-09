@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.2 — component EV + combat UI + EV research export
+- Component utility EV (audit-selected weights), bounded U∈[−1,1], veto retained, default lookahead depth 1.
+- Cleaner combat popup/overlay (probs, EV, PLAY, survival bar, confidence).
+- Local **Export EV research** JSONL (ATK/DEF/shield, no secrets). See `CHANGELOG-0.1.2.md`.
+
 ## 0.1.1 — safe public export
 - Removed raw JSON, CSV, Full, and fishing diagnostic export controls from the popup.
 - Background rejects all legacy private export messages with `private_export_disabled`; only sanitized **Export community** remains shareable.

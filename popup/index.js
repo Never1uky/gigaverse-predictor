@@ -86,6 +86,39 @@ function formatEv(ev) {
   return `${sign}${ev.toFixed(2)}`;
 }
 
+function survivalBarHtml(chance, segments = 10) {
+  if (chance == null || !Number.isFinite(chance)) {
+    return { html: "", pct: "—" };
+  }
+  const pct = Math.max(0, Math.min(100, Math.round(chance * 100)));
+  const filled = Math.round((pct / 100) * segments);
+  const tone = pct >= 70 ? "on" : pct >= 40 ? "mid" : "low";
+  const html = Array.from({ length: segments }, (_, i) => {
+    const cls = i < filled ? `survival-seg ${tone}` : "survival-seg";
+    return `<span class="${cls}"></span>`;
+  }).join("");
+  return { html, pct: `${pct}%` };
+}
+
+function confidenceClass(raw) {
+  const s = String(raw ?? "").toLowerCase();
+  if (s.includes("high")) return "high";
+  if (s.includes("med")) return "medium";
+  if (s.includes("low")) return "low";
+  return "";
+}
+
+function renderMoveTable(el, valuesByMove, playMove, formatter) {
+  if (!el) return;
+  el.innerHTML = ["rock", "paper", "scissor"]
+    .map((m) => {
+      const label = MOVE_UI_LABELS[m];
+      const play = playMove === m ? " is-play" : "";
+      return `<div class="combat-row${play}"><span class="combat-row-label">${label}</span><span class="combat-row-value">${formatter(m, valuesByMove)}</span></div>`;
+    })
+    .join("");
+}
+
 function renderFishGrid(current, possible, bobber = null, board = 4) {
   const el = maybe$("fish-grid");
   if (!el) return;
@@ -261,45 +294,66 @@ async function refresh() {
     predBtn.textContent = "Prediction OFF";
     predBtn.classList.remove("active");
   }
-  const combatMeta = $("combat-meta");
-  const combatProbs = $("combat-probs");
-  const combatEv = $("combat-ev");
+  const combatEmpty = maybe$("combat-empty");
+  const combatLive = maybe$("combat-live");
+  const combatEnemy = maybe$("combat-enemy");
+  const combatN = maybe$("combat-n");
+  const combatProbsTable = maybe$("combat-probs-table");
+  const combatEvTable = maybe$("combat-ev-table");
   const combatPlay = $("combat-play");
   const combatReason = $("combat-reason");
   const combatConfidence = $("combat-confidence");
+  const combatSurvivalBar = maybe$("combat-survival-bar");
+  const combatSurvivalPct = maybe$("combat-survival-pct");
   const summary = maybe$("pred-summary");
   const accuracy = maybe$("pred-accuracy");
   const intuition = maybe$("pred-intuition");
   if ((pred == null ? void 0 : pred.ok) && pred.lastPrediction) {
     const p = pred.lastPrediction;
-    const rec = p.recommendedMove
-      ? MOVE_UI_LABELS[p.recommendedMove]
+    const recMove = p.recommendedMove ?? null;
+    const rec = recMove
+      ? MOVE_UI_LABELS[recMove]
       : p.counterMove
         ? MOVE_UI_LABELS[p.counterMove]
         : "—";
     const cid = p.enemyCid != null && p.enemyCid > 0 ? `#${p.enemyCid}` : "—";
-    combatMeta.className = "";
-    combatMeta.textContent = `Enemy ${cid} · N=${p.n ?? 0}${p.locked ? " · locked" : ""}`;
-    combatProbs.className = "";
-    combatProbs.textContent = [
-      `Sword   ${p.percents?.rock ?? 0}%`,
-      `Shield  ${p.percents?.paper ?? 0}%`,
-      `Spell   ${p.percents?.scissor ?? 0}%`,
-    ].join("\n");
+    if (combatEmpty) combatEmpty.hidden = true;
+    if (combatLive) combatLive.hidden = false;
+    if (combatEnemy) combatEnemy.textContent = `Enemy ${cid}`;
+    if (combatN) combatN.textContent = `N = ${p.n ?? 0}${p.locked ? " · locked" : ""}`;
+    renderMoveTable(combatProbsTable, p.percents ?? {}, recMove, (m, vals) => `${vals[m] ?? 0}%`);
     const rankedBy = Object.fromEntries((p.ranked ?? []).map((r) => [r.move, r]));
-    combatEv.className = "";
-    combatEv.textContent = [
-      `Sword   ${formatEv(rankedBy.rock?.ev)}`,
-      `Shield  ${formatEv(rankedBy.paper?.ev)}`,
-      `Spell   ${formatEv(rankedBy.scissor?.ev)}`,
-    ].join("\n");
-    combatPlay.className = "play-line";
-    combatPlay.textContent = `PLAY  ${rec}`;
-    const whyLine = typeof p.why === "string" ? p.why.split("\n")[0] : "";
-    combatReason.className = whyLine ? "small" : "muted small";
-    combatReason.textContent = whyLine || "";
-    combatConfidence.className = "small";
-    combatConfidence.textContent = `Confidence: ${p.confidence ?? "—"}`;
+    renderMoveTable(combatEvTable, rankedBy, recMove, (m, vals) => formatEv(vals[m]?.ev));
+    combatPlay.className = recMove ? "combat-play" : "combat-play is-empty";
+    combatPlay.textContent = `▶ PLAY ${rec}`;
+    const survChance =
+      p.hpKnown && p.survivalChance != null && Number.isFinite(p.survivalChance)
+        ? p.survivalChance
+        : p.hpKnown && p.pDeath != null && Number.isFinite(p.pDeath)
+          ? 1 - p.pDeath
+          : null;
+    const bar = survivalBarHtml(survChance);
+    if (combatSurvivalBar) combatSurvivalBar.innerHTML = bar.html || `<span class="survival-seg"></span>`.repeat(10);
+    if (combatSurvivalPct) combatSurvivalPct.textContent = bar.pct;
+    const confRaw = p.confidence ?? "—";
+    const confTone = confidenceClass(confRaw);
+    combatConfidence.className = `confidence-pill${confTone ? ` ${confTone}` : ""}`;
+    combatConfidence.textContent = `Confidence ${String(confRaw).toUpperCase()}`;
+    const reasonBits = [];
+    if (Array.isArray(p.reasons) && p.reasons.length) {
+      for (const r of p.reasons.slice(0, 2)) {
+        if (r?.text) reasonBits.push(r.text);
+      }
+    }
+    if (!reasonBits.length && typeof p.why === "string") {
+      const whyLines = p.why
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => l && !/^Play:/i.test(l));
+      reasonBits.push(...whyLines.slice(0, 2));
+    }
+    combatReason.className = reasonBits.length ? "combat-reason small" : "combat-reason muted small";
+    combatReason.textContent = reasonBits.join(" · ");
     if (summary) {
       summary.className = "";
       summary.textContent = `Play ${rec} · Sword ${p.percents.rock}% · Shield ${p.percents.paper}% · Spell ${p.percents.scissor}% (N=${p.n}, ${p.confidence})`;
@@ -326,14 +380,15 @@ async function refresh() {
       }
     }
   } else {
-    combatMeta.className = "muted";
-    combatMeta.textContent = "No combat prediction yet.";
-    combatProbs.textContent = "";
-    combatEv.textContent = "";
-    combatPlay.className = "play-line muted";
-    combatPlay.textContent = "";
+    if (combatEmpty) combatEmpty.hidden = false;
+    if (combatLive) combatLive.hidden = true;
+    combatPlay.className = "combat-play is-empty";
+    combatPlay.textContent = "▶ PLAY —";
     combatReason.textContent = "";
-    combatConfidence.textContent = "";
+    combatConfidence.className = "confidence-pill";
+    combatConfidence.textContent = "Confidence —";
+    if (combatSurvivalBar) combatSurvivalBar.innerHTML = "";
+    if (combatSurvivalPct) combatSurvivalPct.textContent = "";
     if (summary) {
       summary.className = "muted";
       summary.textContent = "No prediction yet.";
@@ -367,6 +422,33 @@ function wireActions() {
     }
     downloadText(res.filename, res.jsonl, "application/x-ndjson");
     showMessage(`Community export: ${res.count} rows (combat ${res.combat}, fishing ${res.fishing})`);
+  });
+
+  bindClick("btn-ev-export", async () => {
+    const step1 = window.confirm(
+      "Export EV research file includes:\n• Combat exchanges with ATK/DEF/shield\n• Pre/post HP for EV backtests\n• Advisor Play / EV / death risk (no tokens)\n\nDoes NOT include: login, JWT, cookies, wallet, actionToken.\n\nSaved ONLY to your disk — not uploaded.",
+    );
+    if (!step1) return;
+    const understood = window.confirm(
+      "This file is for local analysis / trusted research only.\n\nContinue to save giga-ev-YYYY-MM-DD.jsonl?",
+    );
+    if (!understood) return;
+    const res = await sendMessage({ type: "EXPORT_EV_RESEARCH", confirmed: true });
+    if (!(res == null ? void 0 : res.ok)) {
+      const err = res?.error;
+      showMessage(
+        err === "secrets_detected"
+          ? "Export blocked: secrets detected"
+          : err === "confirm_required"
+            ? "EV export needs confirm"
+            : "EV research export failed",
+      );
+      return;
+    }
+    downloadText(res.filename, res.jsonl, "application/x-ndjson");
+    showMessage(
+      `EV research: ${res.count} rows · scoreable ${res.scoreable} · from ${res.totalMoves} local moves`,
+    );
   });
 
   bindClick("btn-community-import", () => {

@@ -6,18 +6,42 @@ import {
   MAX_BURN_STACKS
 } from "./abilities.js";
 
-/** Survival-first utility weights (Balanced). U ∈ [-1, 1]. */
-const W_SURV = 0.55;
-const W_DMG = 0.35;
-const W_KILL = 0.1;
-const KILL_BONUS = 0.25;
-const LOCK_PENALTY_U = 0.03;
+/**
+ * Component utility weights from COMBAT-4000-EV-OPTIMIZATION (validation-selected).
+ * U ∈ [-1, 1]. Never restore 1e6-scale death.
+ */
+const UTILITY_PARAMS = Object.freeze({
+  deathMode: "hard",
+  hpMode: "linear",
+  selfDmgMode: "relative",
+  wSurv: 0.6175721294945107,
+  wHp: 0.1439538121689111,
+  wDmgEnemy: 0.4488187400624156,
+  wDmgSelf: 0.08242666423320771,
+  wKill: 0.04458856857381761,
+  killBonus: 0.49604659390170125,
+  killGate: true,
+  wLock: 0.018180872537195684,
+  wCritical: 0.28166433619335296,
+  criticalHp: 0.16688084765337408,
+  clamp: true
+});
+
+/** @deprecated aliases kept for backtests / older call sites */
+const W_SURV = UTILITY_PARAMS.wSurv;
+const W_DMG = UTILITY_PARAMS.wDmgEnemy;
+const W_KILL = UTILITY_PARAMS.wKill;
+const KILL_BONUS = UTILITY_PARAMS.killBonus;
+const LOCK_PENALTY_U = UTILITY_PARAMS.wLock;
 const HP_UNKNOWN_PRIOR = 0.7;
 const DEATH_VETO = 0.35;
 /** Second-ply weight in continuation mix. V = (1-γ)·U1 + γ·bestU2 */
 const LOOKAHEAD_GAMMA = 0.65;
-/** Default search depth (1 = one-step only, 2 = +continuation). */
-const DEFAULT_LOOKAHEAD_DEPTH = 2;
+/**
+ * Default search depth.
+ * Optimization audit selected one-step EU (depth 1). Depth 2 remains available via opts.
+ */
+const DEFAULT_LOOKAHEAD_DEPTH = 1;
 
 function num(value, fallback = 0) {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
@@ -283,31 +307,145 @@ function clamp01(x) {
   return Math.max(0, Math.min(1, x));
 }
 
+function finiteOr(value, fallback = 0) {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function clampUtility(u) {
+  const v = finiteOr(u, 0);
+  return Math.max(-1, Math.min(1, v));
+}
+
 /**
- * Per-outcome utility in [-1, 1]. Survival (square HP ratio) dominates damage/kill.
- * Death alone → -1; mutual death → 0. Burn/lifesteal already reflected in after HP via resolveRound.
+ * Component utility parts for one counterfactual outcome.
+ * StatusValue stays 0 — burn/lifesteal already applied in resolveRound HP.
+ *
+ * EU(action) = Σ P(e) · Utility(outcome)
+ * Utility =
+ *   SurvivalValue + HPValue + KillValue + DamageToEnemy
+ *   − DamageTakenCost − ResourceCost − DeathRisk − CriticalZone
  */
-function scoreOutcome(us, enemy, after, ourMove) {
+function scoreOutcomeParts(us, enemy, after, ourMove, params = UTILITY_PARAMS) {
+  const p = params ?? UTILITY_PARAMS;
   const hpKnown = us.hp != null;
-  const weDead = hpKnown && after.us.hp <= 0;
+  const weDead = hpKnown && after.us.hp != null && after.us.hp <= 0;
   const theyDead = after.enemy.hp != null && after.enemy.hp <= 0;
-  if (weDead && !theyDead) return -1;
-  if (weDead && theyDead) return 0;
+
+  const empty = {
+    u: 0,
+    weDead,
+    theyDead,
+    survival: 0,
+    hp: 0,
+    kill: 0,
+    dmgEnemy: 0,
+    dmgSelf: 0,
+    resource: 0,
+    deathRisk: 0,
+    critical: 0,
+    status: 0,
+    hpR: HP_UNKNOWN_PRIOR
+  };
+
+  if (weDead && !theyDead) {
+    return { ...empty, u: -1, deathRisk: 1, survival: 0, hpR: 0 };
+  }
+  if (weDead && theyDead) {
+    return { ...empty, u: 0, deathRisk: 0.5, survival: 0, hpR: 0 };
+  }
 
   let hpR;
-  if (!hpKnown) {
+  if (!hpKnown || after.us.hp == null) {
     hpR = HP_UNKNOWN_PRIOR;
   } else {
     const hpMax = us.hpMax != null && us.hpMax > 0 ? us.hpMax : Math.max(num(after.us.hp, 0), 1);
     hpR = clamp01(num(after.us.hp, 0) / hpMax);
   }
-  const surv = hpR * hpR;
+
+  let surv;
+  if (p.hpMode === "square") surv = hpR * hpR;
+  else if (p.hpMode === "concave") surv = 1 - (1 - hpR) * (1 - hpR);
+  else if (p.hpMode === "critical") {
+    const c = num(p.criticalHp, 0.17);
+    surv = hpR >= c ? c + (hpR - c) * (1 - c) : ((hpR * hpR) / Math.max(c, 1e-6)) * c;
+  } else {
+    surv = hpR; // linear (validation-selected)
+  }
+
+  let criticalPen = 0;
+  const critHp = num(p.criticalHp, 0.17);
+  if (!weDead && hpR < critHp) {
+    criticalPen = num(p.wCritical, 0) * (critHp - hpR) / Math.max(critHp, 1e-6);
+  }
+
   const enemyBefore = Math.max(pool(enemy), 1);
-  const enR = clamp01((pool(enemy) - pool(after.enemy)) / enemyBefore);
-  const killB = theyDead && !weDead ? KILL_BONUS : 0;
-  let u = W_SURV * surv + W_DMG * enR + W_KILL * killB;
-  if (us[ourMove]?.charges === 1 && !theyDead) u -= LOCK_PENALTY_U;
-  return Math.max(-1, Math.min(1, u));
+  const dmgEnemyFrac = clamp01((pool(enemy) - pool(after.enemy)) / enemyBefore);
+
+  let dmgSelfCost = 0;
+  if (hpKnown && after.us.hp != null && !weDead) {
+    const taken = Math.max(0, num(us.hp, 0) - num(after.us.hp, 0));
+    const max = us.hpMax != null && us.hpMax > 0 ? us.hpMax : Math.max(num(us.hp, 0), 1);
+    dmgSelfCost =
+      p.selfDmgMode === "absolute" ? taken / Math.max(max, 1) : taken / Math.max(num(us.hp, 0), 1);
+  }
+
+  let killValue = 0;
+  if (theyDead && !weDead) {
+    let gate = 1;
+    if (p.killGate && hpKnown) {
+      const max = us.hpMax != null && us.hpMax > 0 ? us.hpMax : 1;
+      const beforeR = clamp01(num(us.hp, 0) / max);
+      if (beforeR < 0.15) gate = 0.25;
+      else if (beforeR < 0.25) gate = 0.5;
+    }
+    killValue = num(p.killBonus, 0.5) * gate;
+  }
+
+  const resourceCost = us[ourMove]?.charges === 1 && !theyDead ? num(p.wLock, 0) : 0;
+  const statusValue = 0;
+
+  const survivalTerm = num(p.wSurv, 0) * surv;
+  const hpTerm = num(p.wHp, 0) * hpR;
+  const killTerm = num(p.wKill, 0) * killValue;
+  const dmgEnemyTerm = num(p.wDmgEnemy, 0) * dmgEnemyFrac;
+  const dmgSelfTerm = num(p.wDmgSelf, 0) * dmgSelfCost;
+
+  let u =
+    survivalTerm +
+    hpTerm +
+    killTerm +
+    dmgEnemyTerm -
+    dmgSelfTerm -
+    resourceCost -
+    criticalPen +
+    statusValue;
+
+  if (p.clamp !== false) u = clampUtility(u);
+  else u = finiteOr(u, 0);
+
+  return {
+    u,
+    weDead,
+    theyDead,
+    survival: survivalTerm,
+    hp: hpTerm,
+    kill: killTerm,
+    dmgEnemy: dmgEnemyTerm,
+    dmgSelf: dmgSelfTerm,
+    resource: resourceCost,
+    deathRisk: 0,
+    critical: criticalPen,
+    status: statusValue,
+    hpR
+  };
+}
+
+/**
+ * Per-outcome utility in [-1, 1]. Component form from EV optimization audit.
+ * Death alone → -1; mutual death → 0. Burn/lifesteal already in after HP via resolveRound.
+ */
+function scoreOutcome(us, enemy, after, ourMove) {
+  return scoreOutcomeParts(us, enemy, after, ourMove).u;
 }
 
 function topEnemyMove(P) {
@@ -338,6 +476,131 @@ function killingEnemyMove(us, enemy, ourMove, P, opts) {
   return worst;
 }
 
+function emptyParts() {
+  return {
+    survival: 0,
+    hp: 0,
+    kill: 0,
+    dmgEnemy: 0,
+    dmgSelf: 0,
+    resource: 0,
+    deathRisk: 0,
+    critical: 0,
+    status: 0
+  };
+}
+
+function accumulateParts(acc, parts, p) {
+  acc.survival += p * parts.survival;
+  acc.hp += p * parts.hp;
+  acc.kill += p * parts.kill;
+  acc.dmgEnemy += p * parts.dmgEnemy;
+  acc.dmgSelf += p * parts.dmgSelf;
+  acc.resource += p * parts.resource;
+  acc.deathRisk += p * parts.deathRisk;
+  acc.critical += p * parts.critical;
+  acc.status += p * parts.status;
+}
+
+function scaleParts(acc, mass) {
+  if (!(mass > 0 && mass < 1)) return acc;
+  const out = {};
+  for (const k of Object.keys(acc)) out[k] = acc[k] / mass;
+  return out;
+}
+
+/**
+ * Structured reasons derived from the same EV parts used to pick Play.
+ * Codes are stable; text is UI-facing (Sword/Shield/Spell).
+ */
+function buildReasons(pick, ranked, P, opts = {}) {
+  const reasons = [];
+  if (!pick?.move) return reasons;
+
+  const top = topEnemyMove(P);
+  const topPct = top != null ? Math.round(num(P?.[top], 0) * 1000) / 10 : null;
+  if (top && topPct != null && topPct >= 30) {
+    reasons.push({
+      code: "enemy_likely",
+      text: `enemy likely to play ${MOVE_UI_LABELS[top]} (${topPct}%)`,
+      value: num(P?.[top], 0)
+    });
+  }
+
+  const parts = pick.parts ?? emptyParts();
+  const alts = ranked.filter((r) => r.move !== pick.move && !r.vetoed);
+  const bestAlt = alts.slice().sort((a, b) => b.ev - a.ev)[0];
+  const altParts = bestAlt?.parts;
+
+  if (pick.pDeath >= 0.2) {
+    reasons.push({
+      code: "high_death_risk",
+      text: `high death risk (${Math.round(pick.pDeath * 100)}%)`,
+      value: pick.pDeath
+    });
+  } else if (altParts && parts.survival - altParts.survival >= 0.02) {
+    reasons.push({
+      code: "survival_advantage",
+      text: "survival advantage",
+      value: parts.survival - altParts.survival
+    });
+  }
+
+  const beforeHpR =
+    pick.hpKnown && opts.usHp != null && opts.usHpMax > 0
+      ? opts.usHp / opts.usHpMax
+      : null;
+  if (beforeHpR != null && beforeHpR < 0.35 && (parts.critical > 0.01 || pick.pDeath < (bestAlt?.pDeath ?? 1))) {
+    reasons.push({
+      code: "low_hp_protection",
+      text: "low HP protection",
+      value: beforeHpR
+    });
+  }
+
+  if (parts.kill >= 0.01 || (pick.expectedKill != null && pick.expectedKill >= 0.15)) {
+    reasons.push({
+      code: "kill_opportunity",
+      text: "kill opportunity",
+      value: parts.kill
+    });
+  }
+
+  if (parts.dmgEnemy - (altParts?.dmgEnemy ?? 0) >= 0.03 && parts.kill < 0.01) {
+    reasons.push({
+      code: "damage_advantage",
+      text: "damage advantage",
+      value: parts.dmgEnemy
+    });
+  }
+
+  // We preserved charges if pick is not last-charge while an alternative would lock.
+  if (
+    opts.us &&
+    opts.us[pick.move]?.charges !== 1 &&
+    ranked.some((r) => r.move !== pick.move && (r.parts?.resource ?? 0) > 0.005)
+  ) {
+    reasons.push({
+      code: "resource_preservation",
+      text: "resource preservation",
+      value: parts.resource
+    });
+  }
+
+  if (opts.flatEv && top) {
+    const counter = RPS_COUNTER[top];
+    if (counter && pick.move === counter) {
+      reasons.push({
+        code: "flat_ev_counter",
+        text: `EV≈flat, counter = ${MOVE_UI_LABELS[counter]}`,
+        value: 0
+      });
+    }
+  }
+
+  return reasons.slice(0, 5);
+}
+
 function whyText(pick, ranked, P, locked, opts = {}) {
   if (!pick?.move) return "no legal reply";
   const lines = [];
@@ -364,7 +627,7 @@ function whyText(pick, ranked, P, locked, opts = {}) {
     const counterRow = ranked.find((row) => row.move === counter);
     if (counterRow?.vetoBecause) {
       lines.push(
-        `Not ${MOVE_UI_LABELS[counter]}: you die if they ${MOVE_UI_LABELS[counterRow.vetoBecause]}`,
+        `Not ${MOVE_UI_LABELS[counter]}: you die if they ${MOVE_UI_LABELS[counterRow.vetoBecause]}`
       );
     } else if (opts.enemyAbilities?.burnOnPaperWin && counter === "paper") {
       lines.push("Not Shield: Shield win burns you");
@@ -374,16 +637,28 @@ function whyText(pick, ranked, P, locked, opts = {}) {
       lines.push(`${label}: only legal move`);
     } else {
       lines.push(
-        `${label}: Death ${Math.round(num(pick.pDeath, 0) * 100)}% · HP ~${pick.expectedHpAfter == null ? "?" : Math.round(pick.expectedHpAfter)}`,
+        `${label}: Death ${Math.round(num(pick.pDeath, 0) * 100)}% · HP ~${pick.expectedHpAfter == null ? "?" : Math.round(pick.expectedHpAfter)}`
       );
     }
   }
 
+  // Structured reasons from actual EV components (skip duplicates of lines above).
+  for (const reason of pick.reasons ?? []) {
+    if (reason.code === "flat_ev_counter" && opts.flatEv) continue;
+    if (reason.code === "enemy_likely" && top && counter) continue;
+    const text = reason.text;
+    if (!text) continue;
+    if (lines.some((l) => l.toLowerCase().includes(text.toLowerCase().slice(0, 18)))) continue;
+    // Capitalize first letter for UI consistency with older why lines.
+    lines.push(text.charAt(0).toUpperCase() + text.slice(1));
+  }
+
   if (pick.hpKnown && !(top && counter && pick.move !== counter)) {
     const deathPct = Math.round(num(pick.pDeath, 0) * 100);
+    const survPct = Math.round((1 - num(pick.pDeath, 0)) * 100);
     const hp = pick.expectedHpAfter == null ? "?" : Math.round(pick.expectedHpAfter);
     const sh = pick.expectedShieldAfter == null ? "?" : Math.round(pick.expectedShieldAfter);
-    lines.push(`Death ${deathPct}% · HP ~${hp} · Shield ~${sh}`);
+    lines.push(`Survival ${survPct}% · Death ${deathPct}% · HP ~${hp} · Shield ~${sh}`);
   } else if (!pick.hpKnown) {
     lines.push("HP unknown — playing safe");
   }
@@ -406,7 +681,7 @@ function whyText(pick, ranked, P, locked, opts = {}) {
   if (safer) {
     lines.push(`Safer: ${MOVE_UI_LABELS[safer.move]} (death ${Math.round(safer.pDeath * 100)}%)`);
   }
-  return lines.filter(Boolean).slice(0, 5).join("\n");
+  return lines.filter(Boolean).slice(0, 6).join("\n");
 }
 
 function legalOnlyOne(ranked, move) {
@@ -433,6 +708,7 @@ function bestOneStepEv(us, enemy, P, opts) {
     }
     if (mass > 0 && mass < 1) ev /= mass;
     else if (mass <= 0) continue;
+    if (!Number.isFinite(ev)) continue;
     if (ev > best) best = ev;
   }
   return best === -Infinity ? 0 : best;
@@ -444,12 +720,12 @@ function bestOneStepEv(us, enemy, P, opts) {
  */
 function leafUtility(us, enemy, after, ourMove, P, opts, depth) {
   const u1 = scoreOutcome(us, enemy, after, ourMove);
-  if (depth < 2 || after.weDead || after.theyDead) return u1;
+  if (depth < 2 || after.weDead || after.theyDead) return clampUtility(u1);
   // Unknown HP: stay shallower / more conservative (no invented continuation).
-  if (us.hp == null) return u1;
+  if (us.hp == null) return clampUtility(u1);
   const cont = bestOneStepEv(after.us, after.enemy, P, opts);
   const mixed = (1 - LOOKAHEAD_GAMMA) * u1 + LOOKAHEAD_GAMMA * cont;
-  return Math.max(-1, Math.min(1, mixed));
+  return clampUtility(mixed);
 }
 
 function chooseBestReply(us, enemy, P, opts = {}) {
@@ -464,8 +740,10 @@ function chooseBestReply(us, enemy, P, opts = {}) {
       ev: -Infinity,
       ranked: [],
       why: "no legal reply",
+      reasons: [],
       locked,
       pDeath: 1,
+      survivalChance: 0,
       expectedHpAfter: null,
       expectedShieldAfter: null,
       hpKnown,
@@ -484,14 +762,20 @@ function chooseBestReply(us, enemy, P, opts = {}) {
     let pDeath = 0;
     let expectedHpAfter = 0;
     let expectedShieldAfter = 0;
+    let expectedKill = 0;
     let hpMass = 0;
+    const partsAcc = emptyParts();
     for (const theirMove of MOVE_ORDER) {
       const p = num(P?.[theirMove], 0);
       if (p <= 0) continue;
       const after = resolveRound(us, enemy, ourMove, theirMove, opts);
-      ev += p * leafUtility(us, enemy, after, ourMove, P, opts, lookaheadDepth);
+      const parts = scoreOutcomeParts(us, enemy, after, ourMove);
+      const leaf = leafUtility(us, enemy, after, ourMove, P, opts, lookaheadDepth);
+      ev += p * leaf;
       mass += p;
+      accumulateParts(partsAcc, parts, p);
       if (hpKnown && after.weDead) pDeath += p;
+      if (after.theyDead && !after.weDead) expectedKill += p;
       if (after.us.hp != null) {
         expectedHpAfter += p * after.us.hp;
         hpMass += p;
@@ -501,6 +785,7 @@ function chooseBestReply(us, enemy, P, opts = {}) {
     if (mass > 0 && mass < 1) {
       ev = ev / mass;
       pDeath = pDeath / mass;
+      expectedKill /= mass;
       if (hpMass > 0) {
         expectedHpAfter /= hpMass;
         expectedShieldAfter /= mass;
@@ -509,13 +794,19 @@ function chooseBestReply(us, enemy, P, opts = {}) {
       if (hpMass > 0) expectedHpAfter /= mass;
       expectedShieldAfter /= mass;
     }
+    ev = clampUtility(ev);
+    const parts = scaleParts(partsAcc, mass);
     const vetoBecause = hpKnown ? killingEnemyMove(us, enemy, ourMove, P, opts) : null;
     ranked.push({
       move: ourMove,
       ev,
       pDeath: hpKnown ? pDeath : 0,
+      survivalChance: hpKnown ? clamp01(1 - pDeath) : null,
       expectedHpAfter: hpKnown ? expectedHpAfter : null,
       expectedShieldAfter,
+      expectedKill: hpKnown ? expectedKill : 0,
+      parts,
+      reasons: [],
       vetoBecause,
       vetoed: false,
       hpKnown
@@ -565,6 +856,19 @@ function chooseBestReply(us, enemy, P, opts = {}) {
       flatEv = true;
     }
   }
+  const reasonOpts = {
+    ...opts,
+    flatEv,
+    allLethal,
+    us,
+    usHp: us.hp,
+    usHpMax: us.hpMax
+  };
+  for (const row of ranked) {
+    row.reasons = buildReasons(row, ranked, P, reasonOpts);
+  }
+  if (pick) pick.reasons = buildReasons(pick, ranked, P, reasonOpts);
+
   const vetoNotes = ranked
     .filter((row) => row.vetoBecause)
     .map((row) => `${MOVE_UI_LABELS[row.move]}: you die if they ${MOVE_UI_LABELS[row.vetoBecause]}`);
@@ -577,11 +881,13 @@ function chooseBestReply(us, enemy, P, opts = {}) {
   const whyOpts = { ...opts, flatEv, allLethal };
   return {
     move: pick.move,
-    ev: pick.ev,
+    ev: Number.isFinite(pick.ev) ? pick.ev : 0,
     ranked: ranked.slice(0, 3),
     why: whyText(pick, ranked, P, locked, whyOpts),
+    reasons: pick.reasons ?? [],
     locked,
     pDeath: pick.pDeath,
+    survivalChance: hpKnown ? clamp01(1 - pick.pDeath) : null,
     expectedHpAfter: pick.expectedHpAfter,
     expectedShieldAfter: pick.expectedShieldAfter,
     hpKnown,
@@ -635,6 +941,12 @@ export {
   DEATH_VETO,
   DEFAULT_LOOKAHEAD_DEPTH,
   LOOKAHEAD_GAMMA,
+  UTILITY_PARAMS,
+  W_SURV,
+  W_DMG,
+  W_KILL,
+  KILL_BONUS,
+  LOCK_PENALTY_U,
   MOVE_ORDER,
   MOVE_UI_LABELS,
   RPS_BEATS,
@@ -647,5 +959,6 @@ export {
   legalMoves,
   listUnavailable,
   resolveRound,
-  scoreOutcome
+  scoreOutcome,
+  scoreOutcomeParts
 };
